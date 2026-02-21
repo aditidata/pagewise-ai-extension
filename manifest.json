@@ -4,6 +4,7 @@
   "version": "1.0",
   "description": "AI-powered page-wise PDF summarizer",
   "permissions": ["activeTab", "scripting"],
+  "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },

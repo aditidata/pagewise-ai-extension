@@ -10,7 +10,13 @@ document.addEventListener("DOMContentLoaded", () => {
     const url = tab.url || "";
 
     if (url.toLowerCase().includes(".pdf")) {
-      alert("📘 PDF detected! Ready for page-wise summarization.");
+      // 🔥 open our custom viewer
+      const viewerUrl =
+        chrome.runtime.getURL("viewer.html") +
+        "?file=" +
+        encodeURIComponent(url);
+
+      chrome.tabs.create({ url: viewerUrl });
     } else {
       alert("❌ This is not a PDF page.");
     }

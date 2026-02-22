@@ -2,11 +2,27 @@
 <html>
 <head>
   <title>PageWise AI Viewer</title>
+  <style>
+    body {
+      font-family: Arial;
+      text-align: center;
+      background: #111;
+      color: white;
+    }
+    canvas {
+      border: 1px solid #444;
+      margin-top: 20px;
+    }
+  </style>
 </head>
 <body>
   <h2>📘 PageWise AI Viewer</h2>
   <p id="status">Loading PDF...</p>
 
+  <canvas id="pdf-canvas"></canvas>
+
+  <!-- ✅ PDF.js -->
+  <script src="pdfjs/pdf.min.js"></script>
   <script src="viewer.js"></script>
 </body>
 </html>

@@ -192,8 +192,9 @@ MIT License — feel free to use, modify, and distribute.
 
 ## 👨‍💻 Author
 
-Built by **Aditya** — [@yourgithub](https://github.com/YOUR_USERNAME)
+Built by **Aditi** — [@aditidata]([https://github.com/aditidata])
 
 ---
 
 ⭐ If you found this useful, please star the repo — it helps a lot!
+

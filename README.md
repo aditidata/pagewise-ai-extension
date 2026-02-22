@@ -3,6 +3,10 @@
 > Read smarter. Every page, instantly summarized — privately, on your machine.
 
 ![PageWise AI](icons/icon128.png)
+<img width="1914" height="961" alt="Screenshot 2026-02-23 000615" src="https://github.com/user-attachments/assets/c49354af-1834-4e96-9f19-880c0bf33dc8" />
+<img width="1914" height="967" alt="Screenshot 2026-02-23 000658" src="https://github.com/user-attachments/assets/28ea2b1f-1e88-4770-9372-2590f3d021db" />
+<img width="1920" height="1080" alt="Screenshot (488)" src="https://github.com/user-attachments/assets/2c1e77e5-9784-4ca4-bc24-3ada04f28a5f" />
+
 
 PageWise AI is a Chrome extension that uses a **locally running LLM (Ollama)** to summarize PDF documents page by page, extract keywords, and let you **chat with your document** — all without sending any data to the cloud.
 
@@ -197,4 +201,5 @@ Built by **Aditi** — [@aditidata]([https://github.com/aditidata])
 ---
 
 ⭐ If you found this useful, please star the repo — it helps a lot!
+
 

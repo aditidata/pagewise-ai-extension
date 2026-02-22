@@ -5,7 +5,7 @@ const statusEl = document.getElementById("status");
 const canvas = document.getElementById("pdf-canvas");
 const ctx = canvas.getContext("2d");
 
-// 🔥 Tell PDF.js where worker is
+// Tell PDF.js where worker is
 pdfjsLib.GlobalWorkerOptions.workerSrc = "pdfjs/pdf.worker.min.js";
 
 if (!fileUrl) {
@@ -15,23 +15,33 @@ if (!fileUrl) {
 
   pdfjsLib
     .getDocument(fileUrl)
-    .promise.then((pdf) => {
+    .promise.then(async (pdf) => {
       statusEl.textContent = `✅ PDF loaded (Total pages: ${pdf.numPages})`;
 
-      return pdf.getPage(1);
-    })
-    .then((page) => {
-      const viewport = page.getViewport({ scale: 1.5 });
+      // 🔹 Get first page
+      const page = await pdf.getPage(1);
 
+      // 🔹 Render page
+      const viewport = page.getViewport({ scale: 1.5 });
       canvas.height = viewport.height;
       canvas.width = viewport.width;
 
-      const renderContext = {
+      await page.render({
         canvasContext: ctx,
         viewport: viewport,
-      };
+      }).promise;
 
-      return page.render(renderContext).promise;
+      // 🔥 Extract text
+      const textContent = await page.getTextContent();
+      const textItems = textContent.items.map(item => item.str);
+      const pageText = textItems.join(" ");
+
+      console.log("📘 Extracted Page Text:");
+      console.log(pageText);
+
+      // show preview in UI
+      const preview = pageText.slice(0, 200);
+      statusEl.textContent += `\n🧠 Text extracted: "${preview}..."`;
     })
     .catch((err) => {
       console.error(err);

@@ -1,14 +1,10 @@
 # 📘 PageWise AI — Local AI PDF Summarizer Chrome Extension
 
-> Read smarter. Every page, instantly summarized — privately, on your machine.
+> Read smarter. Every page, instantly summarized — privately on your machine or via Groq cloud.
 
 ![PageWise AI](icons/icon128.png)
-<img width="1914" height="961" alt="Screenshot 2026-02-23 000615" src="https://github.com/user-attachments/assets/c49354af-1834-4e96-9f19-880c0bf33dc8" />
-<img width="1914" height="967" alt="Screenshot 2026-02-23 000658" src="https://github.com/user-attachments/assets/28ea2b1f-1e88-4770-9372-2590f3d021db" />
-<img width="1920" height="1080" alt="Screenshot (488)" src="https://github.com/user-attachments/assets/2c1e77e5-9784-4ca4-bc24-3ada04f28a5f" />
 
-
-PageWise AI is a Chrome extension that uses a **locally running LLM (Ollama)** to summarize PDF documents page by page, extract keywords, and let you **chat with your document** — all without sending any data to the cloud.
+PageWise AI is a Chrome extension that summarizes PDF documents **page by page**, extracts keywords, and lets you **chat with your document** using AI. Choose between a **locally running LLM (Ollama)** for full privacy or **Groq API** for instant cloud-powered summaries — no setup required.
 
 ---
 
@@ -17,20 +13,23 @@ PageWise AI is a Chrome extension that uses a **locally running LLM (Ollama)** t
 - 🧠 **Page-by-page AI summaries** — navigate your PDF and get an instant summary of each page
 - 💬 **Chat with your PDF** — ask questions about the current page, AI answers from the content only
 - 🔑 **AI keyword extraction** — key terms highlighted per page
+- ⚙️ **Dual backend support** — switch between Groq API (cloud) and Ollama (local) from settings
 - 📂 **Multi-PDF tab support** — open and switch between multiple PDFs at once
 - ⚡ **Summarize All** — batch summarize every page with live progress
 - 💾 **Summary caching** — revisit pages instantly without re-calling the model
 - ⬇️ **Export summaries** — download all summaries as a `.txt` file
 - 🌙 **Dark / Light mode** — toggle between themes
-- 🔒 **100% local & private** — no data leaves your machine
+- 🔒 **100% local option** — with Ollama, no data ever leaves your machine
 
 ---
 
-## 🖥️ Demo
+## 🖥️ Screenshot
 
-| Split-screen viewer | Chat with PDF |
+| Feature | Description |
 |---|---|
-| PDF on left, AI summary on right | Ask questions, get answers from page content |
+| Split-screen viewer | PDF on left, AI summary on right |
+| Chat panel | Ask questions, get answers from page content |
+| Settings page | Switch between Groq and Ollama backends |
 
 ---
 
@@ -40,39 +39,47 @@ PageWise AI is a Chrome extension that uses a **locally running LLM (Ollama)** t
 |---|---|
 | Chrome Extension | Manifest V3, JavaScript |
 | PDF Rendering | PDF.js |
-| Backend | Node.js + Express |
+| Backend (Ollama mode) | Node.js + Express |
+| Cloud AI | Groq API (llama-3.1-8b-instant) |
 | Local AI | Ollama (llama3.2:1b) |
-| Styling | CSS Variables, Sora + JetBrains Mono |
+| Storage | Chrome Storage API |
+| Fonts | Sora + JetBrains Mono |
 
 ---
 
-## 📦 Prerequisites
+## 🚀 Quick Start
 
-Before using PageWise AI, you need:
+### Option A — Groq API (Recommended, No Setup)
 
-1. **Node.js** — [Download here](https://nodejs.org)
-2. **Ollama** — [Download here](https://ollama.ai)
-3. **llama3.2:1b model** pulled locally
+1. Get a **free Groq API key** at [console.groq.com](https://console.groq.com)
+2. Install the extension (see below)
+3. Click extension icon → ⚙️ Settings → select **Groq** → paste API key → Save
+4. Open any local PDF in Chrome and click the extension
+
+No terminal, no server, no installs needed.
 
 ---
 
-## 🚀 Setup & Installation
+### Option B — Ollama (Local, Private)
 
-### 1. Clone the repo
+#### Prerequisites
+- [Node.js](https://nodejs.org)
+- [Ollama](https://ollama.ai)
 
+#### Steps
+
+**1. Clone the repo**
 ```bash
 git clone https://github.com/YOUR_USERNAME/pagewise-ai-extension.git
 cd pagewise-ai-extension
 ```
 
-### 2. Pull the AI model
-
+**2. Pull the AI model**
 ```bash
 ollama pull llama3.2:1b
 ```
 
-### 3. Start the backend server
-
+**3. Start the backend server**
 ```bash
 cd backend
 npm install
@@ -85,19 +92,29 @@ You should see:
    Endpoints: /summarize  /keywords  /chat
 ```
 
-### 4. Load the extension in Chrome
-
-1. Open Chrome and go to `chrome://extensions`
-2. Enable **Developer Mode** (top right toggle)
+**4. Load the extension in Chrome**
+1. Go to `chrome://extensions`
+2. Enable **Developer Mode** (top right)
 3. Click **Load Unpacked**
 4. Select the root `pagewise-ai-extension/` folder
 
-### 5. Use it!
+**5. Configure settings**
+- Click extension icon → ⚙️ Settings → select **Ollama** → Save
 
-1. Open any PDF file in Chrome (local files work best — enable "Allow access to file URLs" in extension settings)
-2. Click the **PageWise AI** icon in your toolbar
-3. Click **Check Current Page**
-4. The viewer opens with your PDF and AI summary side by side
+---
+
+## ⚙️ Settings Page
+
+The settings page lets you switch between backends:
+
+```
+AI Backend:
+  ○ Groq API  — fast, free API key, works for anyone
+  ● Ollama    — local, private, no internet needed
+```
+
+- **Groq:** Enter your free API key from console.groq.com
+- **Ollama:** Make sure `node server.js` and `ollama serve` are running
 
 ---
 
@@ -106,7 +123,7 @@ You should see:
 ```
 pagewise-ai-extension/
 ├── backend/
-│   ├── server.js          # Express API (summarize, keywords, chat)
+│   ├── server.js          # Express API (/summarize, /keywords, /chat)
 │   └── package.json
 ├── icons/
 │   ├── icon16.png
@@ -119,33 +136,32 @@ pagewise-ai-extension/
 ├── background.js
 ├── content.js
 ├── manifest.json
-├── popup.html
-├── popup.js
+├── popup.html / popup.js
+├── settings.html / settings.js   # Backend switcher UI
 ├── styles.css
-├── viewer.html            # Split-screen UI
-└── viewer.js              # Core logic (tabs, render, cache, chat)
+├── viewer.html                    # Split-screen UI
+└── viewer.js                      # Core logic
 ```
 
 ---
 
-## 🔌 API Endpoints
+## 🔌 Backend API Endpoints
 
-The local backend exposes 3 endpoints on `http://localhost:5000`:
+The local backend exposes 3 endpoints on `http://localhost:5000` (Ollama mode only):
 
 ### `POST /summarize`
-Summarizes page text into bullet points.
 ```json
 { "text": "page content here..." }
 ```
+Returns bullet-point summary for exam revision.
 
 ### `POST /keywords`
-Extracts 8 key terms from the page.
 ```json
 { "text": "page content here..." }
 ```
+Returns array of 8 key terms.
 
 ### `POST /chat`
-Answers a question based on page context.
 ```json
 {
   "question": "What is this page about?",
@@ -153,24 +169,31 @@ Answers a question based on page context.
   "history": []
 }
 ```
+Returns answer grounded in page content only.
 
 ---
 
 ## 🔒 Privacy
 
-PageWise AI is **fully local**:
-- No PDF content is sent to external servers
-- All AI processing runs on `localhost` via Ollama
-- No analytics, no tracking, no accounts
+| Mode | Privacy |
+|---|---|
+| Ollama | ✅ 100% local — no data leaves your machine |
+| Groq | ⚠️ Text sent to Groq's servers — see [Groq Privacy Policy](https://groq.com/privacy-policy/) |
 
 ---
 
 ## 🗺️ Roadmap
 
-- [ ] Chrome Web Store publish
+- [x] Page-by-page AI summaries
+- [x] Chat with PDF
+- [x] Dual backend (Groq + Ollama)
+- [x] Multi-PDF tab support
+- [x] Dark / Light mode
+- [x] Export summaries
+- [ ] Chrome Web Store / Edge Add-ons publish
+- [ ] Highlight keywords directly on PDF canvas
 - [ ] Auto-start backend (no manual server needed)
-- [ ] Support for more Ollama models (user selectable)
-- [ ] Highlight keywords directly on the PDF canvas
+- [ ] User-selectable Groq models
 - [ ] Save chat history per document
 - [ ] Firefox support
 
@@ -178,7 +201,7 @@ PageWise AI is **fully local**:
 
 ## 🤝 Contributing
 
-Contributions are welcome! Feel free to open issues or submit pull requests.
+Contributions are welcome!
 
 1. Fork the repo
 2. Create a branch: `git checkout -b feature/your-feature`
@@ -190,16 +213,16 @@ Contributions are welcome! Feel free to open issues or submit pull requests.
 
 ## 📄 License
 
-MIT License — feel free to use, modify, and distribute.
+MIT License — free to use, modify, and distribute.
 
 ---
 
 ## 👨‍💻 Author
 
-Built by **Aditi** — [@aditidata]([https://github.com/aditidata])
+Built by **Aditi** — [@aditidata](https://github.com/aditidata)
+
+*Started as a frustrated student's exam-week project. Turned into something real.*
 
 ---
 
-⭐ If you found this useful, please star the repo — it helps a lot!
-
-
+⭐ If this helped you study, please star the repo — it means a lot!

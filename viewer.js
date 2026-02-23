@@ -1,27 +1,27 @@
 // Add this helper at the top of viewer.js
 async function getSettings() {
   return new Promise(resolve => {
-    chrome.storage.local.get("settings", (data) => {
-      resolve(data.settings || { backend: "ollama" });
+    chrome.storage.local.get("pagewise_config", (data) => {
+      resolve(data.pagewise_config || { backend: "ollama" });
     });
   });
 }
 
 // Replace your getSummary function
 async function getSummary(text) {
-  const settings = await getSettings();
-  
-  if (settings.backend === "groq") {
+  const config = await getSettings();
+
+  if (config.backend === "groq") {
     try {
       const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${settings.groqKey}`,
+          "Authorization": `Bearer ${config.groqKey}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model: "llama-3.1-8b-instant",
-          messages: [{ role: "user", content: `Summarize this into clear bullet points for exam revision. Each bullet starts with •\n\n${text.slice(0, 3000)}` }],
+          model: config.groqModel || "llama-3.1-8b-instant",
+          messages: [{ role: "user", content: `Summarize into bullet points for exam revision. Each bullet starts with •\n\n${text.slice(0, 3000)}` }],
           max_tokens: 1000
         })
       });
@@ -33,7 +33,8 @@ async function getSummary(text) {
     }
   } else {
     try {
-      const res = await fetch("http://localhost:5000/summarize", {
+      const url = config.ollamaUrl || "http://localhost:5000";
+      const res = await fetch(`${url}/summarize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text })
@@ -46,19 +47,19 @@ async function getSummary(text) {
 
 // Replace your getKeywords function
 async function getKeywords(text) {
-  const settings = await getSettings();
+  const config = await getSettings();
 
-  if (settings.backend === "groq") {
+  if (config.backend === "groq") {
     try {
       const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${settings.groqKey}`,
+          "Authorization": `Bearer ${config.groqKey}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model: "llama-3.1-8b-instant",
-          messages: [{ role: "user", content: `Extract 8 important keywords from this text. Return ONLY a JSON array of strings, nothing else. Example: ["word1","word2"]\n\n${text.slice(0, 1500)}` }],
+          model: config.groqModel || "llama-3.1-8b-instant",
+          messages: [{ role: "user", content: `Extract 8 keywords. Return ONLY a JSON array. Example: ["word1","word2"]\n\n${text.slice(0, 1500)}` }],
           max_tokens: 100
         })
       });
@@ -69,7 +70,8 @@ async function getKeywords(text) {
     } catch { return []; }
   } else {
     try {
-      const res = await fetch("http://localhost:5000/keywords", {
+      const url = config.ollamaUrl || "http://localhost:5000";
+      const res = await fetch(`${url}/keywords`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text })
@@ -301,17 +303,17 @@ function flashPage() {
 // ── API calls ─────────────────────────────────────────────
 
 async function askChat(question, context) {
-  const settings = await getSettings();
+  const config = await getSettings();
   const tab = activeTab();
   if (!tab) return "No PDF loaded.";
 
-  if (settings.backend === "groq") {
+  if (config.backend === "groq") {
     try {
-      const history = chatHistory[tab.id] || [];
+      const history  = chatHistory[tab.id] || [];
       const messages = [
-        { role: "system", content: `Answer questions based ONLY on this page content:\n\n${context.slice(0, 2000)}` },
+        { role: "system", content: `Answer based ONLY on this page:\n\n${context.slice(0, 2000)}` },
         ...history.map(h => ([
-          { role: "user", content: h.user },
+          { role: "user",      content: h.user      },
           { role: "assistant", content: h.assistant }
         ])).flat(),
         { role: "user", content: question }
@@ -319,11 +321,11 @@ async function askChat(question, context) {
       const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${settings.groqKey}`,
+          "Authorization": `Bearer ${config.groqKey}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model: "llama-3.1-8b-instant",
+          model: config.groqModel || "llama-3.1-8b-instant",
           messages,
           max_tokens: 500
         })
@@ -333,7 +335,8 @@ async function askChat(question, context) {
     } catch { return "❌ Groq chat failed."; }
   } else {
     try {
-      const res = await fetch("http://localhost:5000/chat", {
+      const url = config.ollamaUrl || "http://localhost:5000";
+      const res = await fetch(`${url}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question, context, history: chatHistory[tab.id] || [] })

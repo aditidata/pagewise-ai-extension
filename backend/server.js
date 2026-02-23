@@ -14,9 +14,17 @@ const MODEL  = "llama-3.1-8b-instant";
 // ── Helper: call Ollama ───────────────────────────────────
 async function ollamaCall(prompt) {
   const response = await fetch(OLLAMA, {
-    method : "POST",
+    method: "POST",
     headers: { "Content-Type": "application/json" },
-    body   : JSON.stringify({ model: MODEL, prompt, stream: false }),
+    body: JSON.stringify({
+      model: "llama3.2:1b",
+      prompt: prompt,   // ✅ use the parameter
+      stream: false,
+      options: {
+        temperature: 0.7,
+        num_predict: 500
+      }
+    }),
   });
   const data = await response.json();
   return data.response || "";
@@ -40,7 +48,9 @@ ${text.slice(0, 2000)}
 
 Summary:`;
 
-    const summary = await ollamaCall(prompt);
+    const summary = await ollamaCall(
+  `Summarize this into bullet points for exam revision:\n\n${text.slice(0, 2000)}`
+);
     return res.json({ summary: summary.trim(), fallback: false });
 
   } catch (err) {

@@ -1,17 +1,58 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+  <meta charset="UTF-8"/>
   <title>PageWise AI</title>
-  <link rel="stylesheet" href="styles.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Sora',sans-serif;background:#08080f;color:#e4e4f0;width:272px;overflow:hidden}
+    .header{background:linear-gradient(135deg,#10101c,#18182a);border-bottom:1px solid #252540;padding:14px 16px;display:flex;align-items:center;gap:9px}
+    .logo-icon{width:32px;height:32px;background:linear-gradient(135deg,#7c6af7,#4fc3f7);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
+    .logo-text{font-size:14px;font-weight:700;letter-spacing:-0.5px}
+    .logo-text span{color:#7c6af7}
+    .logo-sub{font-size:10px;color:#6060a0;margin-top:1px}
+    .body{padding:12px}
+    .backend-indicator{display:flex;align-items:center;gap:6px;padding:8px 11px;background:#18182a;border:1px solid #252540;border-radius:8px;margin-bottom:10px;font-size:11px}
+    .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;animation:pd 2s infinite}
+    .dot.groq{background:#f97316;box-shadow:0 0 5px #f97316}
+    .dot.ollama{background:#4ade80;box-shadow:0 0 5px #4ade80}
+    .dot.none{background:#6060a0;animation:none}
+    @keyframes pd{0%,100%{opacity:1}50%{opacity:0.4}}
+    .be-label{color:#6060a0}
+    .be-val{color:#e4e4f0;font-weight:600;margin-left:auto;font-size:10.5px}
+    .warning{display:none;align-items:center;gap:6px;padding:8px 11px;background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.25);border-radius:8px;font-size:11px;color:#f87171;margin-bottom:10px}
+    .warning.show{display:flex}
+    .main-btn{width:100%;padding:11px;background:linear-gradient(135deg,#7c6af7,#6a58e5);border:none;border-radius:9px;color:white;font-size:13px;font-family:'Sora',sans-serif;font-weight:600;cursor:pointer;transition:all 0.2s;margin-bottom:7px;display:flex;align-items:center;justify-content:center;gap:6px}
+    .main-btn:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(124,106,247,0.4)}
+    .btn-row{display:flex;gap:5px}
+    .sec-btn{flex:1;padding:7px;background:#18182a;border:1px solid #252540;border-radius:7px;color:#6060a0;font-size:10.5px;font-family:'Sora',sans-serif;font-weight:500;cursor:pointer;transition:all 0.2s;display:flex;align-items:center;justify-content:center;gap:3px}
+    .sec-btn:hover{background:#20203a;color:#e4e4f0;border-color:#2e2e52}
+    .footer{padding:7px 12px;border-top:1px solid #252540;font-size:9.5px;color:#404070;text-align:center}
+  </style>
 </head>
 <body>
-  <div class="container">
-    <h2>PageWise AI</h2>
-    <p>Extension is working </p>
-
-    <button id="check">Check Current Page</button>
+<div class="header">
+  <div class="logo-icon">📘</div>
+  <div>
+    <div class="logo-text">Page<span>Wise</span> AI</div>
+    <div class="logo-sub">PDF Summarizer</div>
   </div>
-
-  <script src="popup.js"></script>
+</div>
+<div class="body">
+  <div class="backend-indicator">
+    <div class="dot" id="dot"></div>
+    <span class="be-label">Backend:</span>
+    <span class="be-val" id="be-val">Loading...</span>
+  </div>
+  <div class="warning" id="warning">⚠️ Not a PDF page. Open a PDF file first.</div>
+  <button class="main-btn" id="check-btn">📄 Open PDF Viewer</button>
+  <div class="btn-row">
+    <button class="sec-btn" id="settings-btn">⚙️ Settings</button>
+    <button class="sec-btn" id="github-btn">⭐ GitHub</button>
+  </div>
+</div>
+<div class="footer">v1.2 — Groq Cloud or Local Ollama</div>
+<script src="popup.js"></script>
 </body>
 </html>

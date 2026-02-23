@@ -1,3 +1,84 @@
+// Add this helper at the top of viewer.js
+async function getSettings() {
+  return new Promise(resolve => {
+    chrome.storage.local.get("settings", (data) => {
+      resolve(data.settings || { backend: "ollama" });
+    });
+  });
+}
+
+// Replace your getSummary function
+async function getSummary(text) {
+  const settings = await getSettings();
+  
+  if (settings.backend === "groq") {
+    try {
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${settings.groqKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "llama-3.1-8b-instant",
+          messages: [{ role: "user", content: `Summarize this into clear bullet points for exam revision. Each bullet starts with •\n\n${text.slice(0, 3000)}` }],
+          max_tokens: 1000
+        })
+      });
+      const data = await res.json();
+      return data.choices[0].message.content;
+    } catch (err) {
+      console.error("Groq error:", err);
+      return "❌ Groq API call failed.";
+    }
+  } else {
+    try {
+      const res = await fetch("http://localhost:5000/summarize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text })
+      });
+      const data = await res.json();
+      return data.summary;
+    } catch { return "❌ Ollama server not running."; }
+  }
+}
+
+// Replace your getKeywords function
+async function getKeywords(text) {
+  const settings = await getSettings();
+
+  if (settings.backend === "groq") {
+    try {
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${settings.groqKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "llama-3.1-8b-instant",
+          messages: [{ role: "user", content: `Extract 8 important keywords from this text. Return ONLY a JSON array of strings, nothing else. Example: ["word1","word2"]\n\n${text.slice(0, 1500)}` }],
+          max_tokens: 100
+        })
+      });
+      const data = await res.json();
+      const raw   = data.choices[0].message.content;
+      const match = raw.match(/\[.*?\]/s);
+      return match ? JSON.parse(match[0]) : [];
+    } catch { return []; }
+  } else {
+    try {
+      const res = await fetch("http://localhost:5000/keywords", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text })
+      });
+      const data = await res.json();
+      return data.keywords || [];
+    } catch { return []; }
+  }
+}
 // ── State ─────────────────────────────────────────────────
 const summaryCache = {};   // { tabId: { pageNum: summary } }
 const textCache    = {};   // { tabId: { pageNum: pageText } }
@@ -218,41 +299,49 @@ function flashPage() {
 }
 
 // ── API calls ─────────────────────────────────────────────
-async function getSummary(text) {
-  try {
-    const res  = await fetch("http://localhost:5000/summarize", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text })
-    });
-    const data = await res.json();
-    if (typeof data.summary === "string") return data.summary;
-    return "No summary returned.";
-  } catch { return "❌ Failed to fetch summary."; }
-}
-
-async function getKeywords(text) {
-  try {
-    const res  = await fetch("http://localhost:5000/keywords", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text })
-    });
-    const data = await res.json();
-    return data.keywords || [];
-  } catch { return []; }
-}
 
 async function askChat(question, context) {
+  const settings = await getSettings();
   const tab = activeTab();
   if (!tab) return "No PDF loaded.";
-  const history = chatHistory[tab.id] || [];
-  try {
-    const res  = await fetch("http://localhost:5000/chat", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, context, history })
-    });
-    const data = await res.json();
-    return data.answer || "No answer returned.";
-  } catch { return "❌ Could not reach the AI server."; }
+
+  if (settings.backend === "groq") {
+    try {
+      const history = chatHistory[tab.id] || [];
+      const messages = [
+        { role: "system", content: `Answer questions based ONLY on this page content:\n\n${context.slice(0, 2000)}` },
+        ...history.map(h => ([
+          { role: "user", content: h.user },
+          { role: "assistant", content: h.assistant }
+        ])).flat(),
+        { role: "user", content: question }
+      ];
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${settings.groqKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "llama-3.1-8b-instant",
+          messages,
+          max_tokens: 500
+        })
+      });
+      const data = await res.json();
+      return data.choices[0].message.content;
+    } catch { return "❌ Groq chat failed."; }
+  } else {
+    try {
+      const res = await fetch("http://localhost:5000/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question, context, history: chatHistory[tab.id] || [] })
+      });
+      const data = await res.json();
+      return data.answer;
+    } catch { return "❌ Ollama server not running."; }
+  }
 }
 
 // ── Navigation ────────────────────────────────────────────

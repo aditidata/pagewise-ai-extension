@@ -9,7 +9,7 @@ app.use(cors());
 app.use(express.json());
 
 const OLLAMA = "http://localhost:11434/api/generate";
-const MODEL  = "llama3.2:1b";
+const MODEL  = "llama-3.1-8b-instant";
 
 // ── Helper: call Ollama ───────────────────────────────────
 async function ollamaCall(prompt) {

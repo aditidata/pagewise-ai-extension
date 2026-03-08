@@ -1,9 +1,8 @@
 // ── Settings ──────────────────────────────────────────────
 async function getSettings() {
   return new Promise(resolve => {
-    chrome.storage.local.get("pagewise_config", (data) => {
-      resolve(data.pagewise_config || { backend: "ollama" });
-    });
+    chrome.storage.local.get("pagewise_config", data =>
+      resolve(data.pagewise_config || { backend: "ollama" }));
   });
 }
 
@@ -65,38 +64,42 @@ async function getKeywords(text) {
   }
 }
 
-// ── State ─────────────────────────────────────────────────
+// ── App State ─────────────────────────────────────────────
 const summaryCache = {};
 const textCache    = {};
 const chatHistory  = {};
-let tabs           = [];
-let activeTabId    = null;
-let isLight        = false;
+let tabs        = [];
+let activeTabId = null;
+let isLight     = false;
 
 // ── Highlight State ───────────────────────────────────────
-let highlights       = {};
-let selectedColor    = "yellow";
-let pendingSelection = null;
-let currentScale     = 1.5;  // track render scale
+let highlights    = {};         // { pdfKey: [{ id, page, color, rect, note }] }
+let hlMode        = false;      // are we in highlight mode?
+let selectedColor = "yellow";
+let isDragging    = false;
+let dragStart     = null;       // { x, y } in canvas coords
+let dragEnd       = null;
 
-// ── DOM ───────────────────────────────────────────────────
-const statusEl   = document.getElementById("status");
-const canvas     = document.getElementById("pdf-canvas");
-const hlCanvas   = document.getElementById("highlight-canvas");
-const ctx        = canvas.getContext("2d");
-const hlCtx      = hlCanvas.getContext("2d");
-const summaryBox = document.getElementById("summary-box");
-const pageInfo   = document.getElementById("page-info");
-const loader     = document.getElementById("loader");
-const summScroll = document.getElementById("summary-scroll");
-const cacheTag   = document.getElementById("cache-tag");
-const pageSlider = document.getElementById("page-slider");
-const kwWrap     = document.getElementById("keywords-wrap");
-const pageFlash  = document.getElementById("page-flash");
-const tabsWrap   = document.getElementById("tabs-wrap");
-const textLayer  = document.getElementById("text-layer");
-const hlToolbar  = document.getElementById("hl-toolbar");
-const hlPreview  = document.getElementById("hl-selected-preview");
+// ── DOM refs ──────────────────────────────────────────────
+const statusEl    = document.getElementById("status");
+const canvas      = document.getElementById("pdf-canvas");
+const hlCanvas    = document.getElementById("highlight-canvas");
+const dragCanvas  = document.getElementById("drag-canvas");
+const ctx         = canvas.getContext("2d");
+const hlCtx       = hlCanvas.getContext("2d");
+const dragCtx     = dragCanvas.getContext("2d");
+const summaryBox  = document.getElementById("summary-box");
+const pageInfo    = document.getElementById("page-info");
+const loader      = document.getElementById("loader");
+const summScroll  = document.getElementById("summary-scroll");
+const cacheTag    = document.getElementById("cache-tag");
+const pageSlider  = document.getElementById("page-slider");
+const kwWrap      = document.getElementById("keywords-wrap");
+const pageFlash   = document.getElementById("page-flash");
+const tabsWrap    = document.getElementById("tabs-wrap");
+const canvasWrap  = document.getElementById("canvas-wrap");
+const hlActionBar = document.getElementById("hl-action-bar");
+const hlModeBtn   = document.getElementById("hl-mode-btn");
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = "pdfjs/pdf.worker.min.js";
 
@@ -118,7 +121,336 @@ document.getElementById("theme-btn").addEventListener("click", () => {
   redrawHighlights();
 });
 
-// ── Tab management ────────────────────────────────────────
+// ══════════════════════════════════════════════════════════
+// HIGHLIGHT MODE
+// ══════════════════════════════════════════════════════════
+
+// Enter / exit highlight mode
+hlModeBtn.addEventListener("click", () => {
+  hlMode = true;
+  hlActionBar.classList.remove("hidden");
+  hlModeBtn.style.background = "var(--accent)";
+  hlModeBtn.style.color = "#fff";
+  hlModeBtn.style.borderColor = "var(--accent)";
+  canvasWrap.classList.add("hl-mode");
+  dragCanvas.style.pointerEvents = "auto";
+  statusEl.textContent = "✏ Highlight mode ON — drag over text to highlight";
+});
+
+document.getElementById("hl-done-btn").addEventListener("click", exitHlMode);
+
+function exitHlMode() {
+  hlMode = false;
+  hlActionBar.classList.add("hidden");
+  hlModeBtn.style.background = "";
+  hlModeBtn.style.color = "";
+  hlModeBtn.style.borderColor = "";
+  canvasWrap.classList.remove("hl-mode");
+  dragCanvas.style.pointerEvents = "none";
+  dragCtx.clearRect(0, 0, dragCanvas.width, dragCanvas.height);
+  isDragging = false;
+  dragStart = null;
+  dragEnd   = null;
+  const tab = activeTab();
+  if (tab) statusEl.textContent = `✅ Page ${tab.currentPage} of ${tab.pdfDoc?.numPages}`;
+}
+
+// Color picker in action bar
+document.querySelectorAll(".hl-color-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".hl-color-btn").forEach(b => b.classList.remove("selected"));
+    btn.classList.add("selected");
+    selectedColor = btn.dataset.color;
+  });
+});
+
+// ── Get mouse position relative to canvas ────────────────
+function getCanvasPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  // Scale mouse coords to canvas pixel space
+  const scaleX = canvas.width  / rect.width;
+  const scaleY = canvas.height / rect.height;
+  return {
+    x: (e.clientX - rect.left) * scaleX,
+    y: (e.clientY - rect.top)  * scaleY
+  };
+}
+
+// ── Drag events on dragCanvas ─────────────────────────────
+dragCanvas.addEventListener("mousedown", e => {
+  if (!hlMode) return;
+  e.preventDefault();
+  isDragging = true;
+  dragStart  = getCanvasPos(e);
+  dragEnd    = { ...dragStart };
+});
+
+dragCanvas.addEventListener("mousemove", e => {
+  if (!hlMode || !isDragging) return;
+  dragEnd = getCanvasPos(e);
+  drawDragRect();
+});
+
+dragCanvas.addEventListener("mouseup", e => {
+  if (!hlMode || !isDragging) return;
+  isDragging = false;
+  dragEnd = getCanvasPos(e);
+
+  const rect = normalizeRect(dragStart, dragEnd);
+
+  // Only save if drag area is meaningful (not just a click)
+  if (rect.w < 5 || rect.h < 5) {
+    dragCtx.clearRect(0, 0, dragCanvas.width, dragCanvas.height);
+    dragStart = null; dragEnd = null;
+    return;
+  }
+
+  saveHighlightRect(rect);
+  dragCtx.clearRect(0, 0, dragCanvas.width, dragCanvas.height);
+  dragStart = null; dragEnd = null;
+});
+
+dragCanvas.addEventListener("mouseleave", e => {
+  if (!hlMode || !isDragging) return;
+  isDragging = false;
+  dragCtx.clearRect(0, 0, dragCanvas.width, dragCanvas.height);
+});
+
+// Draw live preview rect while dragging
+function drawDragRect() {
+  dragCtx.clearRect(0, 0, dragCanvas.width, dragCanvas.height);
+  if (!dragStart || !dragEnd) return;
+
+  const rect = normalizeRect(dragStart, dragEnd);
+  const colorMap = {
+    yellow: "rgba(247,201,72,0.35)",
+    green:  "rgba(74,222,128,0.3)",
+    blue:   "rgba(79,195,247,0.3)",
+    pink:   "rgba(248,113,113,0.3)"
+  };
+  const borderMap = {
+    yellow: "rgba(247,201,72,0.9)",
+    green:  "rgba(74,222,128,0.9)",
+    blue:   "rgba(79,195,247,0.9)",
+    pink:   "rgba(248,113,113,0.9)"
+  };
+
+  dragCtx.fillStyle   = colorMap[selectedColor];
+  dragCtx.strokeStyle = borderMap[selectedColor];
+  dragCtx.lineWidth   = 1.5;
+
+  dragCtx.beginPath();
+  dragCtx.rect(rect.x, rect.y, rect.w, rect.h);
+  dragCtx.fill();
+  dragCtx.stroke();
+}
+
+// Normalize rect so x/y is always top-left
+function normalizeRect(a, b) {
+  return {
+    x: Math.min(a.x, b.x),
+    y: Math.min(a.y, b.y),
+    w: Math.abs(b.x - a.x),
+    h: Math.abs(b.y - a.y)
+  };
+}
+
+// Save the dragged rect as a highlight
+function saveHighlightRect(rect) {
+  const tab = activeTab();
+  if (!tab) return;
+  const key = getPdfKey();
+  if (!highlights[key]) highlights[key] = [];
+
+  // Extract text under the rect from PDF text items
+  const note = extractTextFromRect(rect, tab.id, tab.currentPage);
+
+  const hl = {
+    id:    Date.now().toString(),
+    page:  tab.currentPage,
+    color: selectedColor,
+    rect,
+    note: note || `Highlighted area (page ${tab.currentPage})`
+  };
+
+  highlights[key].push(hl);
+  saveHighlights();
+  redrawHighlights();
+  renderHighlightsList();
+  updateHighlightCount();
+
+  statusEl.textContent = `✅ Highlight saved!`;
+  setTimeout(() => {
+    if (hlMode) statusEl.textContent = "✏ Highlight mode ON — drag over text to highlight";
+  }, 1500);
+}
+
+// Extract text items that fall within a canvas rect
+function extractTextFromRect(rect, tabId, pageNum) {
+  const items = textItemsCache[tabId]?.[pageNum];
+  if (!items) return "";
+
+  const matched = items.filter(item => {
+    // item has { x, y, w, h, str } in canvas pixel coords
+    const cx = item.x + item.w / 2;
+    const cy = item.y + item.h / 2;
+    return cx >= rect.x && cx <= rect.x + rect.w &&
+           cy >= rect.y && cy <= rect.y + rect.h;
+  });
+
+  return matched.map(i => i.str).join(" ").trim();
+}
+
+// ── Text items cache (for text extraction under rects) ────
+const textItemsCache = {}; // { tabId: { pageNum: [{x,y,w,h,str}] } }
+
+function cacheTextItems(textContent, viewport, tabId, pageNum) {
+  if (!textItemsCache[tabId]) textItemsCache[tabId] = {};
+  const canvasHeight = viewport.height;
+
+  textItemsCache[tabId][pageNum] = textContent.items
+    .filter(item => item.str.trim())
+    .map(item => {
+      const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+      const x  = tx[4];
+      const y  = canvasHeight - tx[5];
+      const h  = Math.abs(tx[3]);
+      const w  = item.width * viewport.scale;
+      return { x, y: y - h, w, h, str: item.str };
+    });
+}
+
+// ── Draw saved highlights on hlCanvas ────────────────────
+function redrawHighlights() {
+  const tab = activeTab();
+  if (!tab) return;
+  hlCtx.clearRect(0, 0, hlCanvas.width, hlCanvas.height);
+
+  const key = getPdfKey();
+  if (!key || !highlights[key]) return;
+
+  const colorMap = {
+    yellow: "rgba(247,201,72,0.45)",
+    green:  "rgba(74,222,128,0.4)",
+    blue:   "rgba(79,195,247,0.4)",
+    pink:   "rgba(248,113,113,0.4)"
+  };
+
+  highlights[key]
+    .filter(h => h.page === tab.currentPage)
+    .forEach(hl => {
+      hlCtx.fillStyle = colorMap[hl.color] || colorMap.yellow;
+      const r = hl.rect;
+      hlCtx.beginPath();
+      if (hlCtx.roundRect) hlCtx.roundRect(r.x, r.y, r.w, r.h, 3);
+      else hlCtx.rect(r.x, r.y, r.w, r.h);
+      hlCtx.fill();
+    });
+}
+
+// ── Highlights list panel ─────────────────────────────────
+function renderHighlightsList() {
+  const hlList = document.getElementById("hl-list");
+  const key = getPdfKey();
+  const hls = (key && highlights[key]) ? highlights[key] : [];
+
+  if (!hls.length) {
+    hlList.innerHTML = `<div class="hl-empty"><div class="ei">🖊</div><div>No highlights yet.<br>Click 🖊 Highlight in toolbar,<br>then drag over PDF text.</div></div>`;
+    return;
+  }
+
+  hlList.innerHTML = "";
+  [...hls].sort((a, b) => a.page - b.page).forEach(hl => {
+    const item = document.createElement("div");
+    item.className = "hl-item";
+    item.innerHTML = `
+      <div class="hl-item-header">
+        <div class="hl-item-dot dot-${hl.color}"></div>
+        <span class="hl-item-page">Page ${hl.page}</span>
+        <button class="hl-item-delete" data-id="${hl.id}">✕</button>
+      </div>
+      <div class="hl-item-text">${hl.note || "Highlighted region"}</div>
+    `;
+    item.querySelector(".hl-item-text").addEventListener("click", () => {
+      renderPage(hl.page);
+      document.querySelectorAll(".panel-tab").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".panel-section").forEach(s => s.classList.remove("active"));
+      document.querySelector("[data-panel='summary']").classList.add("active");
+      document.getElementById("panel-summary").classList.add("active");
+    });
+    item.querySelector(".hl-item-delete").addEventListener("click", () => deleteHighlight(hl.id));
+    hlList.appendChild(item);
+  });
+}
+
+function deleteHighlight(id) {
+  const key = getPdfKey();
+  if (!key) return;
+  highlights[key] = highlights[key].filter(h => h.id !== id);
+  saveHighlights();
+  redrawHighlights();
+  renderHighlightsList();
+  updateHighlightCount();
+}
+
+function updateHighlightCount() {
+  const key   = getPdfKey();
+  const count = (key && highlights[key]) ? highlights[key].length : 0;
+  document.getElementById("hl-count-badge").textContent  = `${count} saved`;
+  document.getElementById("hl-tab-count").textContent    = count > 0 ? `${count} ` : "";
+}
+
+function saveHighlights() {
+  chrome.storage.local.set({ pagewise_highlights: highlights });
+}
+
+async function loadHighlights() {
+  return new Promise(resolve => {
+    chrome.storage.local.get("pagewise_highlights", data => {
+      highlights = data.pagewise_highlights || {};
+      resolve();
+    });
+  });
+}
+
+// ── Export highlights ─────────────────────────────────────
+document.getElementById("hl-export-btn").addEventListener("click", () => {
+  const key = getPdfKey();
+  const hls = (key && highlights[key]) ? highlights[key] : [];
+  if (!hls.length) { alert("No highlights to export."); return; }
+
+  let out = `PageWise AI — Highlights\n${key}\n${"=".repeat(40)}\n\n`;
+  const byPage = {};
+  hls.forEach(h => { if (!byPage[h.page]) byPage[h.page] = []; byPage[h.page].push(h); });
+  Object.keys(byPage).sort((a,b)=>a-b).forEach(pg => {
+    out += `PAGE ${pg}\n${"-".repeat(20)}\n`;
+    byPage[pg].forEach(h => { out += `[${h.color.toUpperCase()}] ${h.note}\n`; });
+    out += "\n";
+  });
+
+  const a = Object.assign(document.createElement("a"), {
+    href: URL.createObjectURL(new Blob([out], { type: "text/plain" })),
+    download: "pagewise-highlights.txt"
+  });
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+document.getElementById("hl-clear-btn").addEventListener("click", () => {
+  const key = getPdfKey();
+  if (!key) return;
+  if (!confirm("Clear all highlights for this PDF?")) return;
+  highlights[key] = [];
+  saveHighlights();
+  redrawHighlights();
+  renderHighlightsList();
+  updateHighlightCount();
+});
+
+// ══════════════════════════════════════════════════════════
+// PDF LOADING & RENDERING
+// ══════════════════════════════════════════════════════════
+
 function createTab(url) {
   const id    = Date.now().toString();
   const label = decodeURIComponent(url.split("/").pop() || "PDF").slice(0, 24);
@@ -168,9 +500,9 @@ function closeTab(id) {
     statusEl.textContent = "No PDFs open.";
     canvas.width = 0; canvas.height = 0;
     hlCanvas.width = 0; hlCanvas.height = 0;
+    dragCanvas.width = 0; dragCanvas.height = 0;
     summaryBox.innerHTML = "";
     kwWrap.innerHTML = "";
-    textLayer.innerHTML = "";
     activeTabId = null;
     renderTabs();
     return;
@@ -185,7 +517,6 @@ function getPdfKey() {
   return decodeURIComponent(tab.url.split("/").pop() || tab.url);
 }
 
-// ── Load PDF ──────────────────────────────────────────────
 async function loadPDF(url, tabId) {
   statusEl.textContent = "📄 Loading PDF...";
   showLoader();
@@ -204,7 +535,6 @@ async function loadPDF(url, tabId) {
   }
 }
 
-// ── Render page ───────────────────────────────────────────
 async function renderPage(pageNum) {
   const tab = activeTab();
   if (!tab || !tab.pdfDoc) return;
@@ -218,35 +548,36 @@ async function renderPage(pageNum) {
   document.getElementById("prev-page").disabled = pageNum <= 1;
   document.getElementById("next-page").disabled = pageNum >= tab.pdfDoc.numPages;
 
-  textLayer.innerHTML = "";
-  hlToolbar.classList.remove("visible");
-  pendingSelection = null;
-
   try {
     const page     = await tab.pdfDoc.getPage(pageNum);
-    const scale    = 1.5;
-    currentScale   = scale;
-    const viewport = page.getViewport({ scale });
+    const viewport = page.getViewport({ scale: 1.5 });
 
-    canvas.height   = viewport.height;
-    canvas.width    = viewport.width;
-    hlCanvas.height = viewport.height;
-    hlCanvas.width  = viewport.width;
+    canvas.height    = viewport.height;
+    canvas.width     = viewport.width;
+    hlCanvas.height  = viewport.height;
+    hlCanvas.width   = viewport.width;
+    dragCanvas.height = viewport.height;
+    dragCanvas.width  = viewport.width;
+
+    // dragCanvas pointer events only active in hl mode
+    dragCanvas.style.pointerEvents = hlMode ? "auto" : "none";
 
     await page.render({ canvasContext: ctx, viewport }).promise;
 
-    // Extract text content
+    // Extract and cache text content
     const textContent = await page.getTextContent();
     const pageText    = textContent.items.map(i => i.str).join(" ");
     textCache[tab.id][pageNum] = pageText;
 
-    // Build pixel-perfect text layer
-    buildTextLayer(textContent, viewport);
+    // Cache text item positions for text extraction under highlights
+    cacheTextItems(textContent, viewport, tab.id, pageNum);
 
-    statusEl.textContent = `✅ Page ${pageNum} of ${tab.pdfDoc.numPages}`;
+    statusEl.textContent = hlMode
+      ? "✏ Highlight mode ON — drag over text to highlight"
+      : `✅ Page ${pageNum} of ${tab.pdfDoc.numPages}`;
+
     redrawHighlights();
 
-    // Summary
     if (summaryCache[tab.id][pageNum]) {
       showSummary(summaryCache[tab.id][pageNum], true);
     } else {
@@ -262,272 +593,6 @@ async function renderPage(pageNum) {
     hideLoader();
   }
 }
-
-// ── Build pixel-perfect text layer ────────────────────────
-// This manually positions each text span using the PDF transform matrix
-// multiplied by the viewport scale — this is what makes selection align perfectly.
-function buildTextLayer(textContent, viewport) {
-  textLayer.innerHTML = "";
-  textLayer.style.width  = viewport.width  + "px";
-  textLayer.style.height = viewport.height + "px";
-
-  const canvasHeight = viewport.height;
-
-  textContent.items.forEach(item => {
-    if (!item.str || !item.transform) return;
-
-    // PDF transform: [scaleX, skewY, skewX, scaleY, translateX, translateY]
-    const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
-
-    // tx[4] = x position, tx[5] = y position (from bottom in PDF space)
-    // Canvas y = canvasHeight - pdfY
-    const x      = tx[4];
-    const y      = tx[5];
-    const scaleX = tx[0];
-    const scaleY = tx[3];
-    const angle  = Math.atan2(tx[1], tx[0]);
-
-    const fontSize   = Math.sqrt(scaleX * scaleX + tx[1] * tx[1]);
-    const fontHeight = Math.abs(scaleY);
-
-    const span = document.createElement("span");
-    span.textContent = item.str;
-    span.style.cssText = `
-      position: absolute;
-      left:   ${x}px;
-      top:    ${canvasHeight - y}px;
-      font-size: ${fontHeight}px;
-      font-family: sans-serif;
-      color: transparent;
-      white-space: pre;
-      cursor: text;
-      transform-origin: 0% 0%;
-      transform: scaleX(${item.width > 0 ? (item.width * viewport.scale) / (item.str.length * fontHeight * 0.6 || 1) : 1}) rotate(${angle}rad);
-      line-height: 1;
-      user-select: text;
-      pointer-events: auto;
-    `;
-
-    textLayer.appendChild(span);
-  });
-}
-
-// ── Text selection → highlight toolbar ───────────────────
-document.addEventListener("mouseup", (e) => {
-  const wrap = document.getElementById("canvas-wrap");
-  if (!wrap || !wrap.contains(e.target)) return;
-
-  setTimeout(() => {
-    const selection = window.getSelection();
-    const text = selection ? selection.toString().trim() : "";
-
-    if (text.length < 2) {
-      hlToolbar.classList.remove("visible");
-      pendingSelection = null;
-      return;
-    }
-
-    // Get rects relative to the canvas element (not the page)
-    const rects = [];
-    const canvasRect = canvas.getBoundingClientRect();
-
-    for (let i = 0; i < selection.rangeCount; i++) {
-      const range = selection.getRangeAt(i);
-      const clientRects = range.getClientRects();
-      for (const r of clientRects) {
-        if (r.width < 1 || r.height < 1) continue;
-        rects.push({
-          x: r.left - canvasRect.left,
-          y: r.top  - canvasRect.top,
-          w: r.width,
-          h: r.height
-        });
-      }
-    }
-
-    if (!rects.length) return;
-
-    pendingSelection = { text, rects };
-    hlPreview.textContent = `"${text.slice(0, 60)}${text.length > 60 ? "…" : ""}"`;
-    hlToolbar.classList.add("visible");
-  }, 10);
-});
-
-// ── Color picker ──────────────────────────────────────────
-document.querySelectorAll(".hl-color-btn").forEach(btn => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".hl-color-btn").forEach(b => b.classList.remove("selected"));
-    btn.classList.add("selected");
-    selectedColor = btn.dataset.color;
-  });
-});
-
-// ── Save highlight ────────────────────────────────────────
-document.getElementById("hl-save-btn").addEventListener("click", () => {
-  if (!pendingSelection) return;
-  const tab = activeTab();
-  if (!tab) return;
-  const key = getPdfKey();
-  if (!highlights[key]) highlights[key] = [];
-
-  const hl = {
-    id:    Date.now().toString(),
-    page:  tab.currentPage,
-    text:  pendingSelection.text,
-    color: selectedColor,
-    rects: pendingSelection.rects
-  };
-
-  highlights[key].push(hl);
-  saveHighlights();
-  redrawHighlights();
-  renderHighlightsList();
-  updateHighlightCount();
-
-  window.getSelection()?.removeAllRanges();
-  hlToolbar.classList.remove("visible");
-  pendingSelection = null;
-
-  statusEl.textContent = `✅ Highlight saved — "${hl.text.slice(0, 40)}"`;
-  setTimeout(() => { statusEl.textContent = `✅ Page ${tab.currentPage} of ${tab.pdfDoc?.numPages}`; }, 2000);
-});
-
-// ── Cancel highlight ──────────────────────────────────────
-document.getElementById("hl-cancel-btn").addEventListener("click", () => {
-  window.getSelection()?.removeAllRanges();
-  hlToolbar.classList.remove("visible");
-  pendingSelection = null;
-});
-
-// ── Draw highlights on overlay canvas ────────────────────
-function redrawHighlights() {
-  const tab = activeTab();
-  if (!tab) return;
-  hlCtx.clearRect(0, 0, hlCanvas.width, hlCanvas.height);
-
-  const key = getPdfKey();
-  if (!key || !highlights[key]) return;
-
-  const pageHls = highlights[key].filter(h => h.page === tab.currentPage);
-  const colorMap = {
-    yellow: "rgba(247,201,72,0.45)",
-    green:  "rgba(74,222,128,0.38)",
-    blue:   "rgba(79,195,247,0.38)",
-    pink:   "rgba(248,113,113,0.38)"
-  };
-
-  pageHls.forEach(hl => {
-    hlCtx.fillStyle = colorMap[hl.color] || colorMap.yellow;
-    hl.rects.forEach(r => {
-      hlCtx.beginPath();
-      if (hlCtx.roundRect) {
-        hlCtx.roundRect(r.x, r.y - 2, r.w, r.h + 2, 2);
-      } else {
-        hlCtx.rect(r.x, r.y - 2, r.w, r.h + 2);
-      }
-      hlCtx.fill();
-    });
-  });
-}
-
-// ── Highlights panel ──────────────────────────────────────
-function renderHighlightsList() {
-  const hlList = document.getElementById("hl-list");
-  const key = getPdfKey();
-  const hls = (key && highlights[key]) ? highlights[key] : [];
-
-  if (!hls.length) {
-    hlList.innerHTML = `<div class="hl-empty"><div class="ei">🖊</div><div>No highlights yet.<br>Select text on the PDF<br>to save highlights.</div></div>`;
-    return;
-  }
-
-  hlList.innerHTML = "";
-  [...hls].sort((a, b) => a.page - b.page).forEach(hl => {
-    const item = document.createElement("div");
-    item.className = "hl-item";
-    item.innerHTML = `
-      <div class="hl-item-header">
-        <div class="hl-item-dot dot-${hl.color}"></div>
-        <span class="hl-item-page">Page ${hl.page}</span>
-        <button class="hl-item-delete" data-id="${hl.id}" title="Delete">✕</button>
-      </div>
-      <div class="hl-item-text" data-page="${hl.page}">${hl.text}</div>
-    `;
-    item.querySelector(".hl-item-text").addEventListener("click", () => {
-      renderPage(hl.page);
-      document.querySelectorAll(".panel-tab").forEach(b => b.classList.remove("active"));
-      document.querySelectorAll(".panel-section").forEach(s => s.classList.remove("active"));
-      document.querySelector("[data-panel='summary']").classList.add("active");
-      document.getElementById("panel-summary").classList.add("active");
-    });
-    item.querySelector(".hl-item-delete").addEventListener("click", () => deleteHighlight(hl.id));
-    hlList.appendChild(item);
-  });
-}
-
-function deleteHighlight(id) {
-  const key = getPdfKey();
-  if (!key || !highlights[key]) return;
-  highlights[key] = highlights[key].filter(h => h.id !== id);
-  saveHighlights();
-  redrawHighlights();
-  renderHighlightsList();
-  updateHighlightCount();
-}
-
-function updateHighlightCount() {
-  const key = getPdfKey();
-  const count = (key && highlights[key]) ? highlights[key].length : 0;
-  document.getElementById("hl-count-badge").textContent = `${count} saved`;
-  document.getElementById("hl-tab-count").textContent = count > 0 ? `${count} ` : "";
-}
-
-function saveHighlights() {
-  chrome.storage.local.set({ pagewise_highlights: highlights });
-}
-
-async function loadHighlights() {
-  return new Promise(resolve => {
-    chrome.storage.local.get("pagewise_highlights", (data) => {
-      highlights = data.pagewise_highlights || {};
-      resolve();
-    });
-  });
-}
-
-// ── Export highlights ─────────────────────────────────────
-document.getElementById("hl-export-btn").addEventListener("click", () => {
-  const key = getPdfKey();
-  const hls = (key && highlights[key]) ? highlights[key] : [];
-  if (!hls.length) { alert("No highlights to export."); return; }
-
-  let out = `PageWise AI — Highlights\n${key}\n${"=".repeat(40)}\n\n`;
-  const byPage = {};
-  hls.forEach(h => { if (!byPage[h.page]) byPage[h.page] = []; byPage[h.page].push(h); });
-  Object.keys(byPage).sort((a,b)=>a-b).forEach(pg => {
-    out += `PAGE ${pg}\n${"-".repeat(20)}\n`;
-    byPage[pg].forEach(h => { out += `[${h.color.toUpperCase()}] ${h.text}\n`; });
-    out += "\n";
-  });
-
-  const a = Object.assign(document.createElement("a"), {
-    href: URL.createObjectURL(new Blob([out], { type: "text/plain" })),
-    download: "pagewise-highlights.txt"
-  });
-  a.click();
-  URL.revokeObjectURL(a.href);
-});
-
-document.getElementById("hl-clear-btn").addEventListener("click", () => {
-  const key = getPdfKey();
-  if (!key) return;
-  if (!confirm("Clear all highlights for this PDF?")) return;
-  highlights[key] = [];
-  saveHighlights();
-  redrawHighlights();
-  renderHighlightsList();
-  updateHighlightCount();
-});
 
 // ── Summary helpers ───────────────────────────────────────
 function showLoader() {
@@ -612,7 +677,10 @@ document.getElementById("export-btn").addEventListener("click", () => {
   if (!tab) return;
   const text = buildExportText(tab.id);
   if (!text) { alert("Navigate some pages first."); return; }
-  const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([text], { type: "text/plain" })), download: "pagewise-summary.txt" });
+  const a = Object.assign(document.createElement("a"), {
+    href: URL.createObjectURL(new Blob([text], { type: "text/plain" })),
+    download: "pagewise-summary.txt"
+  });
   a.click();
   URL.revokeObjectURL(a.href);
 });
@@ -633,7 +701,7 @@ document.getElementById("summarize-all-btn").addEventListener("click", async () 
       const page = await tab.pdfDoc.getPage(pg);
       const tc   = await page.getTextContent();
       const text = tc.items.map(i => i.str).join(" ");
-      textCache[tab.id][pg] = text;
+      textCache[tab.id][pg]    = text;
       const summary = await getSummary(text);
       summaryCache[tab.id][pg] = summary;
       results[pg] = summary;
@@ -660,7 +728,10 @@ document.getElementById("export-all-btn").addEventListener("click", () => {
   if (!tab) return;
   const text = buildExportText(tab.id);
   if (!text) return;
-  const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(new Blob([text], {type:"text/plain"})), download: "pagewise-all-summaries.txt" });
+  const a = Object.assign(document.createElement("a"), {
+    href: URL.createObjectURL(new Blob([text], {type:"text/plain"})),
+    download: "pagewise-all-summaries.txt"
+  });
   a.click();
 });
 
@@ -769,11 +840,8 @@ async function init() {
   await loadHighlights();
   const params  = new URLSearchParams(window.location.search);
   const fileUrl = params.get("file");
-  if (fileUrl) {
-    createTab(fileUrl);
-  } else {
-    statusEl.textContent = "❌ No PDF URL found.";
-  }
+  if (fileUrl) createTab(fileUrl);
+  else statusEl.textContent = "❌ No PDF URL found.";
 }
 
 init();

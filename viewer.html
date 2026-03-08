@@ -93,6 +93,23 @@
 
     <!-- CHAT -->
     <div class="panel-section" id="panel-chat">
+      <!-- RAG mode toggle bar -->
+      <div class="rag-bar">
+        <div class="rag-bar-left">
+          <div class="rag-badge loading" id="rag-badge" title="Initializing RAG engine..."></div>
+          <span class="rag-status-text" id="rag-status">Initializing RAG...</span>
+        </div>
+        <div class="rag-mode-toggle">
+          <span class="rag-mode-label" id="rag-mode-label">📄 This Page</span>
+          <button class="rag-toggle-btn" id="rag-toggle" title="Toggle between page mode and full-PDF RAG mode">
+            RAG
+          </button>
+        </div>
+      </div>
+      <!-- RAG index progress bar -->
+      <div class="rag-progress-wrap" id="rag-progress-wrap">
+        <div class="rag-progress-bar" id="rag-progress-bar" style="width:0%"></div>
+      </div>
       <div class="chat-messages" id="chat-messages">
         <div class="chat-empty"><div class="ei">💬</div><div>Ask anything about this page.<br>AI answers from the page content.</div></div>
       </div>
@@ -152,6 +169,7 @@
 </div>
 
 <script src="pdfjs/pdf.min.js"></script>
+<script src="rag.js"></script>
 <script src="viewer.js"></script>
 </body>
 </html>

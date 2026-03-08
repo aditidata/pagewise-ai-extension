@@ -301,6 +301,10 @@ function extractTextFromRect(rect, tabId, pageNum) {
   return matched.map(i => i.str).join(" ").trim();
 }
 
+// ── RAG State ─────────────────────────────────────────────
+let ragMode     = false;  // false = this page, true = full-PDF RAG
+let ragIndexing = {};     // { tabId: true } while indexing
+
 // ── Text items cache (for text extraction under rects) ────
 const textItemsCache = {}; // { tabId: { pageNum: [{x,y,w,h,str}] } }
 
@@ -529,10 +533,66 @@ async function loadPDF(url, tabId) {
     pageSlider.value = 1;
     statusEl.textContent = `✅ Loaded — ${pdf.numPages} pages`;
     renderPage(1);
+
+    // Kick off background RAG indexing (non-blocking)
+    indexPDFForRAG(tab);
   } catch (err) {
     statusEl.textContent = "❌ Error loading PDF: " + err.message;
     hideLoader();
   }
+}
+
+// ── RAG: extract all pages then index ─────────────────────
+async function indexPDFForRAG(tab) {
+  if (ragIndexing[tab.id]) return;
+  ragIndexing[tab.id] = true;
+  updateRagStatus("⏳ Preparing RAG index...");
+
+  try {
+    const pageTexts = {};
+    // Extract text from all pages (runs alongside normal rendering)
+    for (let pg = 1; pg <= tab.pdfDoc.numPages; pg++) {
+      if (textCache[tab.id]?.[pg]) {
+        pageTexts[pg] = textCache[tab.id][pg];
+      } else {
+        const page    = await tab.pdfDoc.getPage(pg);
+        const tc      = await page.getTextContent();
+        const text    = tc.items.map(i => i.str).join(" ");
+        textCache[tab.id][pg] = text;
+        pageTexts[pg] = text;
+      }
+    }
+
+    // Index using RAG engine
+    const pdfKey = getPdfKeyForTab(tab);
+    await RAG.indexDocument(pdfKey, pageTexts);
+
+    // Update UI
+    const stats = RAG.getStats(pdfKey);
+    updateRagStatus(`✅ RAG ready — ${stats?.chunks || 0} chunks indexed`);
+    updateRagBadge(true);
+  } catch (err) {
+    console.error("RAG indexing failed:", err);
+    updateRagStatus("⚠️ RAG indexing failed");
+  } finally {
+    ragIndexing[tab.id] = false;
+  }
+}
+
+function getPdfKeyForTab(tab) {
+  return decodeURIComponent(tab.url.split("/").pop() || tab.url);
+}
+
+function updateRagStatus(msg) {
+  const el = document.getElementById("rag-status");
+  if (el) el.textContent = msg;
+}
+
+function updateRagBadge(ready) {
+  const badge = document.getElementById("rag-badge");
+  if (!badge) return;
+  badge.className = "rag-badge " + (ready ? "ready" : "loading");
+  badge.title     = ready ? "RAG index ready — full PDF chat enabled" : "Building RAG index...";
 }
 
 async function renderPage(pageNum) {
@@ -759,21 +819,52 @@ document.getElementById("new-pdf-url").addEventListener("keydown", e => {
 
 // ── Chat ──────────────────────────────────────────────────
 async function askChat(question, context) {
-  const config = await getSettings();
-  const tab = activeTab();
+  const config  = await getSettings();
+  const tab     = activeTab();
   if (!tab) return "No PDF loaded.";
+
+  // ── RAG MODE: retrieve relevant chunks from full document ──
+  if (ragMode) {
+    const pdfKey = getPdfKeyForTab(tab);
+    let retrieved = [];
+    try {
+      retrieved = await RAG.retrieve(pdfKey, question);
+    } catch (e) { console.warn("RAG retrieve failed", e); }
+
+    if (retrieved.length) {
+      context = RAG.buildContext(retrieved);
+      const sourcePages = RAG.getSourcePages(retrieved);
+      // Tag answer with source pages after LLM responds
+      tab._lastSourcePages = sourcePages;
+    } else {
+      // Fallback to current page if RAG failed
+      context = textCache[tab.id]?.[tab.currentPage] || "";
+      tab._lastSourcePages = [tab.currentPage];
+    }
+  } else {
+    tab._lastSourcePages = [tab.currentPage];
+  }
+
+  // ── Call LLM ───────────────────────────────────────────────
+  const modeNote = ragMode
+    ? "Answer based on the document excerpts below. Cite page numbers when relevant."
+    : "Answer based ONLY on this page text.";
+
   if (config.backend === "groq") {
     try {
       const history  = chatHistory[tab.id] || [];
       const messages = [
-        { role: "system", content: `Answer based ONLY on this page:\n\n${context.slice(0, 2000)}` },
-        ...history.map(h => ([{ role: "user", content: h.user }, { role: "assistant", content: h.assistant }])).flat(),
+        { role: "system", content: `${modeNote}\n\n${context.slice(0, 3500)}` },
+        ...history.slice(-6).map(h => ([
+          { role: "user",      content: h.user      },
+          { role: "assistant", content: h.assistant }
+        ])).flat(),
         { role: "user", content: question }
       ];
       const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: { "Authorization": `Bearer ${config.groqKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model: config.groqModel || "llama-3.1-8b-instant", messages, max_tokens: 500 })
+        body: JSON.stringify({ model: config.groqModel || "llama-3.1-8b-instant", messages, max_tokens: 600 })
       });
       const data = await res.json();
       return data.choices[0].message.content;
@@ -781,7 +872,11 @@ async function askChat(question, context) {
   } else {
     try {
       const url = config.ollamaUrl || "http://localhost:5000";
-      const res = await fetch(`${url}/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question, context, history: chatHistory[tab.id] || [] }) });
+      const res = await fetch(`${url}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question, context, history: chatHistory[tab.id] || [] })
+      });
       const data = await res.json();
       return data.answer;
     } catch { return "❌ Ollama server not running."; }
@@ -817,31 +912,96 @@ document.getElementById("chat-input").addEventListener("keydown", e => {
 });
 
 async function sendChat() {
-  const input = document.getElementById("chat-input");
-  const send  = document.getElementById("chat-send");
+  const input    = document.getElementById("chat-input");
+  const send     = document.getElementById("chat-send");
   const question = input.value.trim();
   if (!question) return;
   const tab = activeTab();
   if (!tab) return;
   const context = textCache[tab.id]?.[tab.currentPage] || "";
-  input.value = "";
+  input.value   = "";
   send.disabled = true;
   appendBubble("user", question);
   const thinking = appendBubble("thinking", "⏳ thinking...");
-  const answer = await askChat(question, context);
+  const answer   = await askChat(question, context);
   thinking.remove();
   appendBubble("ai", answer);
+
+  // Show source page citations if in RAG mode
+  if (ragMode && tab._lastSourcePages?.length) {
+    appendSourceCitation(tab._lastSourcePages);
+  }
+
   chatHistory[tab.id].push({ user: question, assistant: answer });
   send.disabled = false;
+}
+
+function appendSourceCitation(pages) {
+  const msgs = document.getElementById("chat-messages");
+  const div  = document.createElement("div");
+  div.className = "bubble-citation";
+  div.innerHTML = `📄 Sources: ${pages.map(p =>
+    `<span class="cite-page" data-page="${p}">p.${p}</span>`
+  ).join(" ")}`;
+  // Click page citation → jump to that page
+  div.querySelectorAll(".cite-page").forEach(el => {
+    el.addEventListener("click", () => {
+      renderPage(parseInt(el.dataset.page));
+      // Switch back to summary tab
+      document.querySelectorAll(".panel-tab").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".panel-section").forEach(s => s.classList.remove("active"));
+      document.querySelector("[data-panel='summary']").classList.add("active");
+      document.getElementById("panel-summary").classList.add("active");
+    });
+  });
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
 }
 
 // ── Init ──────────────────────────────────────────────────
 async function init() {
   await loadHighlights();
+
+  // Start RAG engine (loads model in background)
+  RAG.init(
+    (msg)        => updateRagStatus(msg),
+    ()           => updateRagBadge(true),
+    (pct)        => updateRagProgress(pct)
+  );
+
   const params  = new URLSearchParams(window.location.search);
   const fileUrl = params.get("file");
   if (fileUrl) createTab(fileUrl);
   else statusEl.textContent = "❌ No PDF URL found.";
 }
+
+function updateRagProgress(pct) {
+  const bar = document.getElementById("rag-progress-bar");
+  if (bar) {
+    bar.style.width   = pct + "%";
+    bar.style.display = pct < 100 ? "block" : "none";
+  }
+}
+
+// ── RAG mode toggle ────────────────────────────────────────
+document.getElementById("rag-toggle")?.addEventListener("click", () => {
+  ragMode = !ragMode;
+  const btn   = document.getElementById("rag-toggle");
+  const label = document.getElementById("rag-mode-label");
+  if (ragMode) {
+    btn.classList.add("active");
+    if (label) label.textContent = "🌐 Full PDF";
+    appendBubble("thinking", "🧠 RAG mode ON — questions search the entire document");
+  } else {
+    btn.classList.remove("active");
+    if (label) label.textContent = "📄 This Page";
+    appendBubble("thinking", "📄 Page mode — questions use only the current page");
+  }
+  setTimeout(() => {
+    const msgs = document.getElementById("chat-messages");
+    const last = msgs?.querySelector(".bubble.thinking:last-child");
+    if (last) last.remove();
+  }, 2500);
+});
 
 init();

@@ -1,16 +1,24 @@
 {
   "manifest_version": 3,
   "name": "PageWise AI",
-  "version": "1.2",
-  "description": "AI-powered page-wise PDF summarizer with chat, keywords, and multi-tab support. Works with Groq API (free) or local Ollama.",
+  "version": "2.0",
+  "description": "AI-powered PDF reader with RAG pipeline, semantic search, page summaries, chat, highlights and multi-tab support.",
   "permissions": ["activeTab", "scripting", "storage"],
   "host_permissions": [
     "<all_urls>",
-    "https://api.groq.com/*"
+    "https://api.groq.com/*",
+    "https://cdn.jsdelivr.net/*"
   ],
+
   "background": {
     "service_worker": "background.js"
   },
+  "web_accessible_resources": [
+    {
+      "resources": ["rag-worker.js", "pdfjs/*", "viewer.html", "viewer.js", "rag.js", "styles.css"],
+      "matches": ["<all_urls>"]
+    }
+  ],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {

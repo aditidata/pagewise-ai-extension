@@ -22,6 +22,10 @@
       --danger:      #f87171;
       --shadow:      0 8px 40px rgba(0,0,0,0.7);
       --tr:          0.2s cubic-bezier(0.4,0,0.2,1);
+      --hl-yellow:   rgba(247,201,72,0.35);
+      --hl-green:    rgba(74,222,128,0.3);
+      --hl-blue:     rgba(79,195,247,0.3);
+      --hl-pink:     rgba(248,113,113,0.3);
     }
     [data-theme="light"] {
       --bg:#f0f0f8; --surface:#fff; --surface2:#f4f4fc;
@@ -29,6 +33,10 @@
       --text:#1a1a3a; --text-muted:#6060a0; --text-dim:#a0a0c0;
       --accent-soft:rgba(124,106,247,0.08);
       --shadow:0 4px 20px rgba(0,0,0,0.12);
+      --hl-yellow:rgba(247,201,72,0.4);
+      --hl-green:rgba(74,222,128,0.35);
+      --hl-blue:rgba(79,195,247,0.35);
+      --hl-pink:rgba(248,113,113,0.35);
     }
     *{box-sizing:border-box;margin:0;padding:0}
     body{font-family:'Sora',sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden;transition:background var(--tr),color var(--tr)}
@@ -70,6 +78,22 @@
     #page-slider::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;background:var(--accent);cursor:pointer;transition:transform .15s}
     #page-slider::-webkit-slider-thumb:hover{transform:scale(1.3)}
 
+    /* HIGHLIGHT TOOLBAR */
+    .hl-toolbar{display:none;align-items:center;gap:6px;padding:5px 14px;background:var(--surface);border-bottom:1px solid var(--border);flex-shrink:0;animation:sli .2s ease}
+    .hl-toolbar.visible{display:flex}
+    .hl-toolbar-label{font-size:10.5px;color:var(--text-muted);font-family:'JetBrains Mono',monospace}
+    .hl-color-btn{width:20px;height:20px;border-radius:50%;border:2px solid transparent;cursor:pointer;transition:all .15s;flex-shrink:0}
+    .hl-color-btn:hover,.hl-color-btn.selected{border-color:var(--text);transform:scale(1.2)}
+    .hl-color-btn[data-color="yellow"]{background:#f7c948}
+    .hl-color-btn[data-color="green"]{background:#4ade80}
+    .hl-color-btn[data-color="blue"]{background:#4fc3f7}
+    .hl-color-btn[data-color="pink"]{background:#f87171}
+    .hl-save-btn{padding:3px 10px;border-radius:6px;background:var(--accent);border:none;color:#fff;font-size:10.5px;font-family:'Sora',sans-serif;cursor:pointer;transition:all .15s}
+    .hl-save-btn:hover{background:#6a58e5}
+    .hl-cancel-btn{padding:3px 10px;border-radius:6px;background:transparent;border:1px solid var(--border);color:var(--text-muted);font-size:10.5px;font-family:'Sora',sans-serif;cursor:pointer;transition:all .15s}
+    .hl-cancel-btn:hover{background:var(--surface2)}
+    .hl-selected-text{font-size:10px;color:var(--text-muted);font-family:'JetBrains Mono',monospace;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+
     /* MAIN */
     .main{display:flex;flex:1;overflow:hidden}
 
@@ -77,15 +101,25 @@
     .pdf-pane{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;align-items:center;background:var(--bg);scrollbar-width:thin;scrollbar-color:var(--border) transparent}
     .pdf-pane::-webkit-scrollbar{width:4px}
     .pdf-pane::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+
+    /* Canvas + text layer wrapper */
     .canvas-wrap{position:relative;box-shadow:var(--shadow);border-radius:5px;overflow:hidden;border:1px solid var(--border)}
     #pdf-canvas{display:block;max-width:100%}
-    .page-flash{position:absolute;inset:0;background:var(--accent);opacity:0;pointer-events:none;transition:opacity .1s}
+    .page-flash{position:absolute;inset:0;background:var(--accent);opacity:0;pointer-events:none;transition:opacity .1s;z-index:1}
     .page-flash.flash{opacity:.07}
+
+    /* PDF.js text layer */
+    .textLayer{position:absolute;top:0;left:0;right:0;bottom:0;overflow:hidden;opacity:1;line-height:1;z-index:2}
+    .textLayer span{color:transparent;position:absolute;white-space:pre;cursor:text;transform-origin:0% 0%}
+    .textLayer ::selection{background:rgba(124,106,247,0.35)}
+
+    /* Highlight canvas overlay */
+    #highlight-canvas{position:absolute;top:0;left:0;pointer-events:none;z-index:3}
 
     /* RIGHT PANEL */
     .right-panel{width:350px;flex-shrink:0;display:flex;flex-direction:column;background:var(--surface);border-left:1px solid var(--border);overflow:hidden}
     .panel-tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0}
-    .panel-tab{flex:1;padding:9px 8px;text-align:center;font-size:11.5px;font-weight:500;color:var(--text-muted);cursor:pointer;border-bottom:2px solid transparent;transition:all var(--tr);background:transparent;border-top:none;border-left:none;border-right:none;font-family:'Sora',sans-serif}
+    .panel-tab{flex:1;padding:9px 8px;text-align:center;font-size:11px;font-weight:500;color:var(--text-muted);cursor:pointer;border-bottom:2px solid transparent;transition:all var(--tr);background:transparent;border-top:none;border-left:none;border-right:none;font-family:'Sora',sans-serif;white-space:nowrap}
     .panel-tab.active{color:var(--accent);border-bottom-color:var(--accent)}
     .panel-tab:hover:not(.active){color:var(--text);background:var(--surface2)}
     .panel-section{display:none;flex-direction:column;flex:1;overflow:hidden}
@@ -134,6 +168,31 @@
     #chat-send{width:36px;height:36px;background:var(--accent);border:none;border-radius:9px;color:#fff;font-size:15px;cursor:pointer;transition:all var(--tr);flex-shrink:0}
     #chat-send:hover{background:#6a58e5;transform:scale(1.05)}
     #chat-send:disabled{opacity:.4;cursor:not-allowed;transform:none}
+
+    /* HIGHLIGHTS PANEL */
+    .hl-panel-header{padding:9px 13px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+    .hl-count-badge{font-size:10px;color:var(--accent3);background:rgba(247,201,72,.1);border:1px solid rgba(247,201,72,.25);padding:2px 7px;border-radius:20px;font-family:'JetBrains Mono',monospace}
+    .hl-list{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:7px;scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+    .hl-list::-webkit-scrollbar{width:3px}
+    .hl-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+    .hl-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--text-dim);font-size:12px;text-align:center;padding:20px}
+    .hl-empty .ei{font-size:30px}
+    .hl-item{border-radius:8px;border:1px solid var(--border);overflow:hidden;animation:sli .25s ease;transition:all var(--tr)}
+    .hl-item:hover{border-color:var(--border2)}
+    .hl-item-header{display:flex;align-items:center;gap:6px;padding:5px 9px;background:var(--surface2);font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--text-muted)}
+    .hl-item-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+    .hl-item-page{flex:1}
+    .hl-item-delete{background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:11px;padding:0 2px;transition:color .15s}
+    .hl-item-delete:hover{color:var(--danger)}
+    .hl-item-text{padding:7px 9px;font-size:11.5px;line-height:1.6;color:var(--text);cursor:pointer}
+    .hl-item-text:hover{color:var(--accent)}
+    .hl-panel-footer{padding:8px 12px;border-top:1px solid var(--border);display:flex;gap:5px;flex-shrink:0}
+
+    /* color dot styles */
+    .dot-yellow{background:#f7c948}
+    .dot-green{background:#4ade80}
+    .dot-blue{background:#4fc3f7}
+    .dot-pink{background:#f87171}
 
     /* MODALS */
     .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(8px);display:none;align-items:center;justify-content:center;z-index:200}
@@ -185,10 +244,24 @@
   </div>
 </div>
 
+<!-- HIGHLIGHT TOOLBAR — appears on text selection -->
+<div class="hl-toolbar" id="hl-toolbar">
+  <span class="hl-toolbar-label">🖊 Highlight:</span>
+  <button class="hl-color-btn selected" data-color="yellow" title="Yellow"></button>
+  <button class="hl-color-btn" data-color="green" title="Green"></button>
+  <button class="hl-color-btn" data-color="blue" title="Blue"></button>
+  <button class="hl-color-btn" data-color="pink" title="Pink"></button>
+  <span class="hl-selected-text" id="hl-selected-preview"></span>
+  <button class="hl-save-btn" id="hl-save-btn">Save Highlight</button>
+  <button class="hl-cancel-btn" id="hl-cancel-btn">Cancel</button>
+</div>
+
 <div class="main">
   <div class="pdf-pane">
-    <div class="canvas-wrap">
+    <div class="canvas-wrap" id="canvas-wrap">
       <canvas id="pdf-canvas"></canvas>
+      <canvas id="highlight-canvas"></canvas>
+      <div class="textLayer" id="text-layer"></div>
       <div class="page-flash" id="page-flash"></div>
     </div>
   </div>
@@ -197,6 +270,7 @@
     <div class="panel-tabs">
       <button class="panel-tab active" data-panel="summary">🧠 Summary</button>
       <button class="panel-tab" data-panel="chat">💬 Chat</button>
+      <button class="panel-tab" data-panel="highlights">🖊 <span id="hl-tab-count"></span>Saved</button>
     </div>
 
     <!-- SUMMARY -->
@@ -208,7 +282,7 @@
       <div class="loader-wrap" id="loader">
         <div class="loader-ring"></div>
         <div class="loader-dots"><span></span><span></span><span></span></div>
-        <div class="loader-text">Thinking with llama3.2...</div>
+        <div class="loader-text">Thinking with AI...</div>
       </div>
       <div class="summary-scroll" id="summary-scroll" style="display:none">
         <div class="summary-text" id="summary-box"></div>
@@ -230,6 +304,24 @@
       <div class="chat-input-wrap">
         <textarea id="chat-input" placeholder="Ask about this page..." rows="1"></textarea>
         <button id="chat-send">➤</button>
+      </div>
+    </div>
+
+    <!-- HIGHLIGHTS -->
+    <div class="panel-section" id="panel-highlights">
+      <div class="hl-panel-header">
+        <span style="font-size:12px;font-weight:600;color:var(--accent2)">Saved Highlights</span>
+        <span class="hl-count-badge" id="hl-count-badge">0 saved</span>
+      </div>
+      <div class="hl-list" id="hl-list">
+        <div class="hl-empty">
+          <div class="ei">🖊</div>
+          <div>No highlights yet.<br>Select text on the PDF<br>to save highlights.</div>
+        </div>
+      </div>
+      <div class="hl-panel-footer">
+        <button class="action-btn" id="hl-export-btn" style="flex:1">⬇ Export Highlights</button>
+        <button class="action-btn" id="hl-clear-btn">🗑 Clear All</button>
       </div>
     </div>
   </div>

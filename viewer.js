@@ -129,11 +129,13 @@ document.getElementById("theme-btn").addEventListener("click", () => {
 hlModeBtn.addEventListener("click", () => {
   hlMode = true;
   hlActionBar.classList.remove("hidden");
-  hlModeBtn.style.background = "var(--accent)";
-  hlModeBtn.style.color = "#fff";
+  hlModeBtn.style.background  = "var(--accent)";
+  hlModeBtn.style.color       = "#fff";
   hlModeBtn.style.borderColor = "var(--accent)";
-  canvasWrap.classList.add("hl-mode");
-  dragCanvas.style.pointerEvents = "auto";
+  document.querySelectorAll(".drag-overlay").forEach(d => {
+    d.style.pointerEvents = "auto";
+    d.style.cursor = "crosshair";
+  });
   statusEl.textContent = "✏ Highlight mode ON — drag over text to highlight";
 });
 
@@ -142,17 +144,17 @@ document.getElementById("hl-done-btn").addEventListener("click", exitHlMode);
 function exitHlMode() {
   hlMode = false;
   hlActionBar.classList.add("hidden");
-  hlModeBtn.style.background = "";
-  hlModeBtn.style.color = "";
+  hlModeBtn.style.background  = "";
+  hlModeBtn.style.color       = "";
   hlModeBtn.style.borderColor = "";
-  canvasWrap.classList.remove("hl-mode");
-  dragCanvas.style.pointerEvents = "none";
-  dragCtx.clearRect(0, 0, dragCanvas.width, dragCanvas.height);
+  document.querySelectorAll(".drag-overlay").forEach(d => {
+    d.style.pointerEvents = "none";
+    d.style.cursor        = "";
+    d.getContext("2d").clearRect(0, 0, d.width, d.height);
+  });
   isDragging = false;
-  dragStart = null;
-  dragEnd   = null;
   const tab = activeTab();
-  if (tab) statusEl.textContent = `✅ Page ${tab.currentPage} of ${tab.pdfDoc?.numPages}`;
+  if (tab) statusEl.textContent = `✅ ${tab.pdfDoc?.numPages} pages loaded`;
 }
 
 // Color picker in action bar
@@ -336,31 +338,44 @@ function cacheTextItems(textContent, viewport, tabId, pageNum) {
 }
 
 // ── Draw saved highlights on hlCanvas ────────────────────
-function redrawHighlights() {
-  const tab = activeTab();
-  if (!tab) return;
-  hlCtx.clearRect(0, 0, hlCanvas.width, hlCanvas.height);
+const colorMap = {
+  yellow: "rgba(247,201,72,0.45)",
+  green:  "rgba(74,222,128,0.4)",
+  blue:   "rgba(79,195,247,0.4)",
+  pink:   "rgba(248,113,113,0.4)"
+};
 
+function drawHighlightOnCanvas(hlc, hl) {
+  const hctx = hlc.getContext("2d");
+  hctx.fillStyle = colorMap[hl.color] || colorMap.yellow;
+  const r = hl.rect;
+  hctx.beginPath();
+  if (hctx.roundRect) hctx.roundRect(r.x, r.y, r.w, r.h, 3);
+  else hctx.rect(r.x, r.y, r.w, r.h);
+  hctx.fill();
+}
+
+function redrawHighlights() {
   const key = getPdfKey();
   if (!key || !highlights[key]) return;
 
-  const colorMap = {
-    yellow: "rgba(247,201,72,0.45)",
-    green:  "rgba(74,222,128,0.4)",
-    blue:   "rgba(79,195,247,0.4)",
-    pink:   "rgba(248,113,113,0.4)"
-  };
+  // Group by page
+  const byPage = {};
+  highlights[key].forEach(hl => {
+    if (!byPage[hl.page]) byPage[hl.page] = [];
+    byPage[hl.page].push(hl);
+  });
 
-  highlights[key]
-    .filter(h => h.page === tab.currentPage)
-    .forEach(hl => {
-      hlCtx.fillStyle = colorMap[hl.color] || colorMap.yellow;
-      const r = hl.rect;
-      hlCtx.beginPath();
-      if (hlCtx.roundRect) hlCtx.roundRect(r.x, r.y, r.w, r.h, 3);
-      else hlCtx.rect(r.x, r.y, r.w, r.h);
-      hlCtx.fill();
-    });
+  // Draw on each page's hl canvas
+  Object.entries(byPage).forEach(([pg, hls]) => {
+    const block = document.getElementById(`page-block-${pg}`);
+    if (!block) return;
+    const hlc  = block.querySelector(".hl-overlay");
+    if (!hlc) return;
+    const hctx = hlc.getContext("2d");
+    hctx.clearRect(0, 0, hlc.width, hlc.height);
+    hls.forEach(hl => drawHighlightOnCanvas(hlc, hl));
+  });
 }
 
 // ── Highlights list panel ─────────────────────────────────
@@ -636,54 +651,215 @@ async function renderPage(pageNum) {
   if (!tab || !tab.pdfDoc) return;
 
   tab.currentPage = pageNum;
-  flashPage();
-  statusEl.textContent = `📄 Rendering page ${pageNum}...`;
-  pageInfo.textContent  = `${pageNum} / ${tab.pdfDoc.numPages}`;
-  pageSlider.value      = pageNum;
-
+  pageInfo.textContent = `${pageNum} / ${tab.pdfDoc.numPages}`;
+  pageSlider.value     = pageNum;
   document.getElementById("prev-page").disabled = pageNum <= 1;
   document.getElementById("next-page").disabled = pageNum >= tab.pdfDoc.numPages;
 
-  try {
-    const page     = await tab.pdfDoc.getPage(pageNum);
-    const viewport = page.getViewport({ scale: 1.5 });
-
-    canvas.width      = viewport.width;
-    canvas.height     = viewport.height;
-    hlCanvas.width    = viewport.width;
-    hlCanvas.height   = viewport.height;
-    dragCanvas.width  = viewport.width;
-    dragCanvas.height = viewport.height;
-
-    dragCanvas.style.pointerEvents = hlMode ? "auto" : "none";
-
-    await page.render({ canvasContext: ctx, viewport }).promise;
-
-    const textContent = await page.getTextContent();
-    const pageText    = textContent.items.map(i => i.str).join(" ");
-    textCache[tab.id][pageNum] = pageText;
-    cacheTextItems(textContent, viewport, tab.id, pageNum);
-
-    statusEl.textContent = hlMode
-      ? "✏ Highlight mode ON — drag over text to highlight"
-      : `✅ Page ${pageNum} of ${tab.pdfDoc.numPages}`;
-
-    redrawHighlights();
-
-    if (summaryCache[tab.id][pageNum]) {
-      showSummary(summaryCache[tab.id][pageNum], true);
-    } else {
-      showLoader();
-      const [summary, keywords] = await Promise.all([getSummary(pageText), getKeywords(pageText)]);
-      summaryCache[tab.id][pageNum] = summary;
-      showSummary(summary, false);
-      renderKeywords(keywords);
-    }
-  } catch (err) {
-    console.error(err);
-    statusEl.textContent = "❌ " + err.message;
-    hideLoader();
+  // If all pages already rendered, just scroll to that page
+  const existing = document.getElementById(`page-block-${pageNum}`);
+  if (existing) {
+    existing.scrollIntoView({ behavior: "smooth", block: "start" });
+    updateCurrentPageFromScroll(pageNum, tab);
+    return;
   }
+
+  // First load — render all pages
+  await renderAllPages(tab);
+}
+
+async function renderAllPages(tab) {
+  if (!tab || !tab.pdfDoc) return;
+  const pdfPane = document.querySelector(".pdf-pane");
+  pdfPane.innerHTML = ""; // clear
+
+  const numPages = tab.pdfDoc.numPages;
+  statusEl.textContent = `📄 Loading ${numPages} pages...`;
+
+  for (let pg = 1; pg <= numPages; pg++) {
+    // Page wrapper
+    const block = document.createElement("div");
+    block.id        = `page-block-${pg}`;
+    block.className = "page-scroll-block";
+    block.dataset.page = pg;
+
+    // Page number label
+    const label = document.createElement("div");
+    label.className   = "page-scroll-label";
+    label.textContent = `Page ${pg}`;
+    block.appendChild(label);
+
+    // Canvas wrap with 3 canvases
+    const wrap = document.createElement("div");
+    wrap.className = "canvas-wrap";
+
+    const cv  = document.createElement("canvas");
+    const hlc = document.createElement("canvas");
+    const dgc = document.createElement("canvas");
+    hlc.className = "hl-overlay";
+    dgc.className = "drag-overlay";
+    hlc.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";
+    dgc.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";
+
+    wrap.appendChild(cv);
+    wrap.appendChild(hlc);
+    wrap.appendChild(dgc);
+    block.appendChild(wrap);
+    pdfPane.appendChild(block);
+
+    // Render page into canvas
+    try {
+      const page     = await tab.pdfDoc.getPage(pg);
+      const paneW    = pdfPane.clientWidth - 40;
+      const unscaled = page.getViewport({ scale: 1 });
+      const scale    = Math.min(paneW / unscaled.width, 1.8);
+      const viewport = page.getViewport({ scale });
+
+      cv.width  = hlc.width  = dgc.width  = viewport.width;
+      cv.height = hlc.height = dgc.height = viewport.height;
+
+      await page.render({ canvasContext: cv.getContext("2d"), viewport }).promise;
+
+      // Cache text
+      const textContent = await page.getTextContent();
+      const pageText    = textContent.items.map(i => i.str).join(" ");
+      textCache[tab.id][pg] = pageText;
+      cacheTextItems(textContent, viewport, tab.id, pg);
+
+      // Store refs for highlights
+      tab.canvases = tab.canvases || {};
+      tab.canvases[pg] = { cv, hlc, dgc, viewport };
+
+      statusEl.textContent = `📄 Rendered ${pg} / ${numPages}`;
+    } catch (e) { console.error("Page render error pg", pg, e); }
+  }
+
+  statusEl.textContent = `✅ ${numPages} pages loaded — scroll to read`;
+
+  // Draw highlights on all pages
+  redrawHighlights();
+
+  // Setup scroll observer to update current page + summary
+  setupScrollObserver(tab);
+
+  // Scroll to currentPage
+  const target = document.getElementById(`page-block-${tab.currentPage}`);
+  if (target) target.scrollIntoView({ block: "start" });
+
+  // Load summary for first page
+  loadSummaryForPage(tab, tab.currentPage);
+
+  // Setup drag highlight on all pages
+  setupDragOnAllPages(tab);
+}
+
+// ── Scroll observer — updates page number as user scrolls ─
+function setupScrollObserver(tab) {
+  const pdfPane = document.querySelector(".pdf-pane");
+  const observer = new IntersectionObserver((entries) => {
+    let best = null, bestRatio = 0;
+    entries.forEach(e => {
+      if (e.isIntersecting && e.intersectionRatio > bestRatio) {
+        bestRatio = e.intersectionRatio;
+        best = e.target;
+      }
+    });
+    if (best) {
+      const pg = parseInt(best.dataset.page);
+      if (pg !== tab.currentPage) {
+        tab.currentPage = pg;
+        pageInfo.textContent = `${pg} / ${tab.pdfDoc.numPages}`;
+        pageSlider.value     = pg;
+        document.getElementById("prev-page").disabled = pg <= 1;
+        document.getElementById("next-page").disabled = pg >= tab.pdfDoc.numPages;
+        loadSummaryForPage(tab, pg);
+      }
+    }
+  }, { root: pdfPane, threshold: [0.3, 0.6] });
+
+  document.querySelectorAll(".page-scroll-block").forEach(b => observer.observe(b));
+  tab._scrollObserver = observer;
+}
+
+function updateCurrentPageFromScroll(pageNum, tab) {
+  tab.currentPage = pageNum;
+  pageInfo.textContent = `${pageNum} / ${tab.pdfDoc.numPages}`;
+  pageSlider.value     = pageNum;
+  loadSummaryForPage(tab, pageNum);
+}
+
+async function loadSummaryForPage(tab, pg) {
+  const pageText = textCache[tab.id]?.[pg];
+  if (!pageText) return;
+  if (summaryCache[tab.id][pg]) {
+    showSummary(summaryCache[tab.id][pg], true);
+    return;
+  }
+  showLoader();
+  const [summary, keywords] = await Promise.all([getSummary(pageText), getKeywords(pageText)]);
+  summaryCache[tab.id][pg] = summary;
+  showSummary(summary, false);
+  renderKeywords(keywords);
+}
+
+// ── Setup drag highlight events on all page canvases ──────
+function setupDragOnAllPages(tab) {
+  document.querySelectorAll(".page-scroll-block").forEach(block => {
+    const pg  = parseInt(block.dataset.page);
+    const dgc = block.querySelector(".drag-overlay");
+    const hlc = block.querySelector(".hl-overlay");
+    if (!dgc) return;
+
+    let dragging = false, start = null;
+    const dctx = dgc.getContext("2d");
+
+    dgc.addEventListener("mousedown", e => {
+      if (!hlMode) return;
+      dragging = true;
+      const r  = dgc.getBoundingClientRect();
+      start    = { x: e.clientX - r.left, y: e.clientY - r.top };
+    });
+    dgc.addEventListener("mousemove", e => {
+      if (!dragging || !hlMode) return;
+      const r   = dgc.getBoundingClientRect();
+      const cur = { x: e.clientX - r.left, y: e.clientY - r.top };
+      dctx.clearRect(0, 0, dgc.width, dgc.height);
+      dctx.fillStyle = colorMap[selectedColor] + "55";
+      dctx.fillRect(start.x, start.y, cur.x - start.x, cur.y - start.y);
+    });
+    dgc.addEventListener("mouseup", e => {
+      if (!dragging || !hlMode) return;
+      dragging = false;
+      const r   = dgc.getBoundingClientRect();
+      const end = { x: e.clientX - r.left, y: e.clientY - r.top };
+      dctx.clearRect(0, 0, dgc.width, dgc.height);
+      const rect = {
+        x: Math.min(start.x, end.x), y: Math.min(start.y, end.y),
+        w: Math.abs(end.x - start.x), h: Math.abs(end.y - start.y)
+      };
+      if (rect.w > 5 && rect.h > 5) saveHighlightRectOnPage(rect, pg, hlc, tab);
+    });
+    dgc.addEventListener("mouseleave", () => {
+      if (dragging) { dragging = false; dctx.clearRect(0, 0, dgc.width, dgc.height); }
+    });
+
+    // Enable/disable pointer events based on hlMode
+    dgc.style.pointerEvents = hlMode ? "auto" : "none";
+  });
+}
+
+function saveHighlightRectOnPage(rect, pg, hlc, tab) {
+  const key = getPdfKey();
+  if (!highlights[key]) highlights[key] = [];
+  const note = extractTextFromRect(rect, tab.id, pg);
+  const hl   = { id: Date.now().toString(), page: pg, color: selectedColor, rect, note: note || `Highlighted area (page ${pg})` };
+  highlights[key].push(hl);
+  saveHighlights();
+  drawHighlightOnCanvas(hlc, hl);
+  renderHighlightsList();
+  updateHighlightCount();
+  statusEl.textContent = `✅ Highlight saved on page ${pg}!`;
+  setTimeout(() => { statusEl.textContent = hlMode ? "✏ Highlight mode ON" : `✅ ${tab.pdfDoc.numPages} pages loaded`; }, 1500);
 }
 
 // ── Summary helpers ───────────────────────────────────────
@@ -1003,49 +1179,101 @@ let fcFlipped    = false;
 async function generateFlashcards(text, pageNum) {
   const config = await getSettings();
   const prompt = `Generate exactly 6 flashcards from this text for exam revision.
-Return ONLY a JSON array, no other text, no markdown, no backticks.
-Format: [{"q":"question","a":"answer"},...]
-Each answer should be concise (1-2 sentences max).
+Return ONLY a valid JSON array, no explanation, no markdown, no backticks.
+Format exactly like this: [{"q":"question here","a":"answer here"},{"q":"...","a":"..."}]
 
 Text:
 ${text.slice(0, 2500)}`;
 
   if (config.backend === "groq") {
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: { "Authorization": `Bearer ${config.groqKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: config.groqModel || "llama-3.1-8b-instant",
-        messages: [{ role: "user", content: prompt }],
-        max_tokens: 800
-      })
-    });
-    const data = await res.json();
-    return parseFlashcardJSON(data.choices[0].message.content);
+    try {
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${config.groqKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: config.groqModel || "llama-3.1-8b-instant",
+          messages: [
+            { role: "system", content: "You are a flashcard generator. Always respond with ONLY a JSON array, nothing else." },
+            { role: "user", content: prompt }
+          ],
+          max_tokens: 1000
+        })
+      });
+      const data = await res.json();
+      console.log("Groq flashcard raw:", data.choices?.[0]?.message?.content);
+      return parseFlashcardJSON(data.choices[0].message.content);
+    } catch (e) { console.error("Groq FC error:", e); return []; }
+
   } else {
-    const url = config.ollamaUrl || "http://localhost:5000";
-    const res = await fetch(`${url}/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: prompt, context: "", history: [] })
-    });
-    const data = await res.json();
-    return parseFlashcardJSON(data.answer);
+    // Ollama — call the model directly via /api/generate, not the backend /chat
+    try {
+      const ollamaBase = (config.ollamaUrl || "http://localhost:11434").replace("localhost:5000", "localhost:11434");
+      const model      = config.ollamaModel || "llama3.2:1b";
+
+      const res = await fetch(`${ollamaBase}/api/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          prompt,
+          stream: false,
+          options: { temperature: 0.3 }
+        })
+      });
+      const data = await res.json();
+      console.log("Ollama flashcard raw:", data.response);
+      return parseFlashcardJSON(data.response);
+    } catch (e) {
+      console.error("Ollama FC error:", e);
+      // Fallback: try via backend server
+      try {
+        const url = config.ollamaUrl || "http://localhost:5000";
+        const res = await fetch(`${url}/summarize`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: prompt })
+        });
+        const data = await res.json();
+        console.log("Backend FC fallback raw:", data.summary);
+        return parseFlashcardJSON(data.summary);
+      } catch (e2) { console.error("Backend FC fallback error:", e2); return []; }
+    }
   }
 }
 
 function parseFlashcardJSON(raw) {
+  if (!raw) return [];
+
+  // Strip markdown fences
+  let clean = raw.replace(/```json|```/gi, "").trim();
+
+  // Try direct parse
   try {
-    // Strip markdown code fences if present
-    const clean = raw.replace(/```json|```/gi, "").trim();
-    const match = clean.match(/\[[\s\S]*\]/);
-    if (!match) throw new Error("No array found");
-    const cards = JSON.parse(match[0]);
-    return cards.filter(c => c.q && c.a).slice(0, 8);
-  } catch (e) {
-    console.error("Flashcard parse error:", e, raw);
-    return [];
+    const direct = JSON.parse(clean);
+    if (Array.isArray(direct)) return direct.filter(c => c.q && c.a).slice(0, 8);
+  } catch {}
+
+  // Find [ ... ] block
+  const start = clean.indexOf("[");
+  const end   = clean.lastIndexOf("]");
+  if (start !== -1 && end !== -1 && end > start) {
+    try {
+      const arr = JSON.parse(clean.slice(start, end + 1));
+      if (Array.isArray(arr)) return arr.filter(c => c.q && c.a).slice(0, 8);
+    } catch {}
   }
+
+  // Regex: extract every {"q":"...","a":"..."} object individually
+  const cards = [];
+  const re = /\{\s*"q"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"a"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}/g;
+  let m;
+  while ((m = re.exec(clean)) !== null) {
+    cards.push({ q: m[1].replace(/\\"/g, '"'), a: m[2].replace(/\\"/g, '"') });
+  }
+  if (cards.length) return cards.slice(0, 8);
+
+  console.error("Flashcard parse failed. Raw:", clean.slice(0, 400));
+  return [];
 }
 
 // ── Trigger generation from Summary tab button ────────────

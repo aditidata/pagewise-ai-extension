@@ -7,8 +7,7 @@
 //   3. Embed a query string → float32 vector
 //   4. Compute cosine similarity → return top-K chunk indices
 // ═══════════════════════════════════════════════════════════════
-
-importScripts("https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js");
+importScripts(chrome.runtime.getURL("lib/transformers.min.js"));
 
 // Use WASM backend (works in Chrome extension context)
 self.env = self.env || {};

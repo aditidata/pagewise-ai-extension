@@ -230,7 +230,7 @@ const RAG = (() => {
 
     // Retrieve top-K most relevant chunks for a query.
     // Returns array of { chunk, score } sorted by relevance.
-    async retrieve(pdfKey, question) {
+    async retrieve(pdfKey, question, topK = 4) {
       const index = memCache[pdfKey];
       if (!index) return [];
 
@@ -238,7 +238,7 @@ const RAG = (() => {
         type:       "query",
         question,
         embeddings: index.vectors,
-        topK:       TOP_K
+        topK
       });
 
       return result.topIndices.map(({ index: i, score }) => ({

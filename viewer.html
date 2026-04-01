@@ -38,6 +38,9 @@
   <div class="divider"></div>
   <!-- HIGHLIGHT MODE BUTTON -->
   <button class="action-btn" id="hl-mode-btn" title="Enter highlight mode">🖊 Highlight</button>
+  <div class="divider"></div>
+  <!-- SEMANTIC SEARCH BUTTON -->
+  <button class="action-btn" id="search-open-btn" title="Semantic search across PDF">🔍 Search</button>
 </div>
 
 <!-- HIGHLIGHT ACTION BAR — shown only in highlight mode -->
@@ -68,6 +71,8 @@
     <div class="panel-tabs">
       <button class="panel-tab active" data-panel="summary">🧠 Summary</button>
       <button class="panel-tab" data-panel="chat">💬 Chat</button>
+      <button class="panel-tab" data-panel="search">🔍 Search</button>
+      <button class="panel-tab" data-panel="flashcards">🃏 <span id="fc-tab-count"></span>Cards</button>
       <button class="panel-tab" data-panel="highlights">🖊 <span id="hl-tab-count"></span>Saved</button>
     </div>
 
@@ -88,6 +93,67 @@
       <div class="keywords-wrap" id="keywords-wrap"></div>
       <div class="panel-footer">
         <button class="action-btn" id="copy-btn" style="flex:1">📋 Copy Summary</button>
+        <button class="action-btn" id="generate-fc-btn" title="Generate flashcards from this page">🃏 Flashcards</button>
+      </div>
+    </div>
+
+    <!-- FLASHCARDS -->
+    <div class="panel-section" id="panel-flashcards">
+      <div class="fc-header">
+        <div class="fc-header-left">
+          <span style="font-size:12px;font-weight:600;color:var(--accent2)">Flashcards</span>
+          <span class="fc-page-badge" id="fc-page-badge"></span>
+        </div>
+        <span class="fc-count-badge" id="fc-count-badge"></span>
+      </div>
+
+      <!-- Generating loader -->
+      <div class="fc-loader" id="fc-loader" style="display:none">
+        <div class="loader-ring"></div>
+        <div class="loader-text">Generating flashcards...</div>
+      </div>
+
+      <!-- Card flip area -->
+      <div class="fc-stage" id="fc-stage" style="display:none">
+        <div class="fc-progress-row">
+          <span class="fc-progress-text" id="fc-progress-text">1 / 6</span>
+          <div class="fc-progress-bar-wrap">
+            <div class="fc-progress-bar" id="fc-progress-bar"></div>
+          </div>
+        </div>
+
+        <div class="fc-card-wrap" id="fc-card-wrap">
+          <div class="fc-card" id="fc-card">
+            <div class="fc-card-inner" id="fc-card-inner">
+              <div class="fc-card-front">
+                <div class="fc-label">QUESTION</div>
+                <div class="fc-text" id="fc-question"></div>
+                <div class="fc-tap-hint">tap to reveal answer</div>
+              </div>
+              <div class="fc-card-back">
+                <div class="fc-label">ANSWER</div>
+                <div class="fc-text" id="fc-answer"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="fc-nav">
+          <button class="fc-nav-btn" id="fc-prev">◀</button>
+          <div class="fc-dots" id="fc-dots"></div>
+          <button class="fc-nav-btn" id="fc-next">▶</button>
+        </div>
+      </div>
+
+      <!-- Empty state -->
+      <div class="fc-empty" id="fc-empty">
+        <div class="ei">🃏</div>
+        <div>No flashcards yet.<br>Go to Summary tab and click<br><strong>🃏 Flashcards</strong> button.</div>
+      </div>
+
+      <div class="fc-footer" id="fc-footer" style="display:none">
+        <button class="action-btn" id="fc-export-btn" style="flex:1">⬇ Export (Anki)</button>
+        <button class="action-btn" id="fc-regen-btn">↻ Regenerate</button>
       </div>
     </div>
 
@@ -116,6 +182,24 @@
       <div class="chat-input-wrap">
         <textarea id="chat-input" placeholder="Ask about this page..." rows="1"></textarea>
         <button id="chat-send">➤</button>
+      </div>
+    </div>
+
+    <!-- SEARCH -->
+    <div class="panel-section" id="panel-search">
+      <div class="search-panel-header">
+        <div class="search-input-wrap">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="search-input" placeholder="Search entire PDF semantically..." autocomplete="off"/>
+          <button class="search-clear-btn" id="search-clear-btn" style="display:none">✕</button>
+        </div>
+        <div class="search-meta" id="search-meta"></div>
+      </div>
+      <div class="search-results" id="search-results">
+        <div class="search-empty" id="search-empty">
+          <div class="ei">🔍</div>
+          <div>Type anything to search<br>across the entire PDF.<br><span style="color:var(--accent);font-size:10px">Powered by semantic embeddings</span></div>
+        </div>
       </div>
     </div>
 

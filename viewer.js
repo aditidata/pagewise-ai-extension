@@ -286,19 +286,30 @@ function saveHighlightRect(rect) {
 }
 
 // Extract text items that fall within a canvas rect
+// Uses overlap detection instead of center-point — catches partial words at edges
 function extractTextFromRect(rect, tabId, pageNum) {
   const items = textItemsCache[tabId]?.[pageNum];
   if (!items) return "";
 
+  // Expand rect slightly to catch items at boundaries
+  const pad = 4;
+  const rx1 = rect.x - pad, ry1 = rect.y - pad;
+  const rx2 = rect.x + rect.w + pad, ry2 = rect.y + rect.h + pad;
+
   const matched = items.filter(item => {
-    // item has { x, y, w, h, str } in canvas pixel coords
-    const cx = item.x + item.w / 2;
-    const cy = item.y + item.h / 2;
-    return cx >= rect.x && cx <= rect.x + rect.w &&
-           cy >= rect.y && cy <= rect.y + rect.h;
+    // Check if item rect overlaps with selection rect
+    const ix1 = item.x, iy1 = item.y;
+    const ix2 = item.x + item.w, iy2 = item.y + item.h;
+    return ix1 < rx2 && ix2 > rx1 && iy1 < ry2 && iy2 > ry1;
   });
 
-  return matched.map(i => i.str).join(" ").trim();
+  // Sort by y (line) then x (reading order)
+  matched.sort((a, b) => {
+    const lineDiff = Math.round(a.y / 8) - Math.round(b.y / 8);
+    return lineDiff !== 0 ? lineDiff : a.x - b.x;
+  });
+
+  return matched.map(i => i.str).join(" ").replace(/\s+/g, " ").trim();
 }
 
 // ── RAG State ─────────────────────────────────────────────
@@ -367,15 +378,37 @@ function renderHighlightsList() {
   [...hls].sort((a, b) => a.page - b.page).forEach(hl => {
     const item = document.createElement("div");
     item.className = "hl-item";
+
+    // Color map for the text background
+    const bgMap = {
+      yellow: "rgba(247,201,72,0.22)",
+      green:  "rgba(74,222,128,0.18)",
+      blue:   "rgba(79,195,247,0.18)",
+      pink:   "rgba(248,113,113,0.18)"
+    };
+    const borderMap = {
+      yellow: "#f7c948",
+      green:  "#4ade80",
+      blue:   "#4fc3f7",
+      pink:   "#f87171"
+    };
+
+    const hasText  = hl.note && !hl.note.startsWith("Highlighted area");
+    const textHtml = hasText
+      ? `<div class="hl-item-text-block" style="background:${bgMap[hl.color]};border-left:3px solid ${borderMap[hl.color]}">${hl.note}</div>`
+      : `<div class="hl-item-text-block hl-item-no-text" style="border-left:3px solid ${borderMap[hl.color]}">⚠ No text extracted — image or non-selectable region</div>`;
+
     item.innerHTML = `
       <div class="hl-item-header">
         <div class="hl-item-dot dot-${hl.color}"></div>
         <span class="hl-item-page">Page ${hl.page}</span>
+        <span class="hl-item-color-label">${hl.color}</span>
         <button class="hl-item-delete" data-id="${hl.id}">✕</button>
       </div>
-      <div class="hl-item-text">${hl.note || "Highlighted region"}</div>
+      ${textHtml}
     `;
-    item.querySelector(".hl-item-text").addEventListener("click", () => {
+
+    item.querySelector(".hl-item-text-block").addEventListener("click", () => {
       renderPage(hl.page);
       document.querySelectorAll(".panel-tab").forEach(b => b.classList.remove("active"));
       document.querySelectorAll(".panel-section").forEach(s => s.classList.remove("active"));
@@ -486,6 +519,9 @@ function switchTab(id) {
   renderChatHistory(id);
   renderHighlightsList();
   updateHighlightCount();
+  // Load flashcard cache for this tab
+  const pdfKey = getPdfKeyForTab(tab);
+  loadFcCache(id, pdfKey);
   if (tab.pdfDoc) {
     pageSlider.max   = tab.pdfDoc.numPages;
     pageSlider.value = tab.currentPage;
@@ -612,24 +648,20 @@ async function renderPage(pageNum) {
     const page     = await tab.pdfDoc.getPage(pageNum);
     const viewport = page.getViewport({ scale: 1.5 });
 
-    canvas.height    = viewport.height;
-    canvas.width     = viewport.width;
-    hlCanvas.height  = viewport.height;
-    hlCanvas.width   = viewport.width;
-    dragCanvas.height = viewport.height;
+    canvas.width      = viewport.width;
+    canvas.height     = viewport.height;
+    hlCanvas.width    = viewport.width;
+    hlCanvas.height   = viewport.height;
     dragCanvas.width  = viewport.width;
+    dragCanvas.height = viewport.height;
 
-    // dragCanvas pointer events only active in hl mode
     dragCanvas.style.pointerEvents = hlMode ? "auto" : "none";
 
     await page.render({ canvasContext: ctx, viewport }).promise;
 
-    // Extract and cache text content
     const textContent = await page.getTextContent();
     const pageText    = textContent.items.map(i => i.str).join(" ");
     textCache[tab.id][pageNum] = pageText;
-
-    // Cache text item positions for text extraction under highlights
     cacheTextItems(textContent, viewport, tab.id, pageNum);
 
     statusEl.textContent = hlMode
@@ -956,6 +988,451 @@ function appendSourceCitation(pages) {
   });
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;
+}
+
+// ══════════════════════════════════════════════════════════
+// FLASHCARD GENERATOR
+// ══════════════════════════════════════════════════════════
+
+const flashcardCache = {}; // { tabId: { pageNum: [{q, a}] } }
+let fcCards      = [];     // current deck
+let fcIndex      = 0;      // current card index
+let fcFlipped    = false;
+
+// ── Generate flashcards via AI ────────────────────────────
+async function generateFlashcards(text, pageNum) {
+  const config = await getSettings();
+  const prompt = `Generate exactly 6 flashcards from this text for exam revision.
+Return ONLY a JSON array, no other text, no markdown, no backticks.
+Format: [{"q":"question","a":"answer"},...]
+Each answer should be concise (1-2 sentences max).
+
+Text:
+${text.slice(0, 2500)}`;
+
+  if (config.backend === "groq") {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${config.groqKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: config.groqModel || "llama-3.1-8b-instant",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 800
+      })
+    });
+    const data = await res.json();
+    return parseFlashcardJSON(data.choices[0].message.content);
+  } else {
+    const url = config.ollamaUrl || "http://localhost:5000";
+    const res = await fetch(`${url}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: prompt, context: "", history: [] })
+    });
+    const data = await res.json();
+    return parseFlashcardJSON(data.answer);
+  }
+}
+
+function parseFlashcardJSON(raw) {
+  try {
+    // Strip markdown code fences if present
+    const clean = raw.replace(/```json|```/gi, "").trim();
+    const match = clean.match(/\[[\s\S]*\]/);
+    if (!match) throw new Error("No array found");
+    const cards = JSON.parse(match[0]);
+    return cards.filter(c => c.q && c.a).slice(0, 8);
+  } catch (e) {
+    console.error("Flashcard parse error:", e, raw);
+    return [];
+  }
+}
+
+// ── Trigger generation from Summary tab button ────────────
+document.getElementById("generate-fc-btn")?.addEventListener("click", async () => {
+  const tab = activeTab();
+  if (!tab) return;
+  const pageNum = tab.currentPage;
+  const text    = textCache[tab.id]?.[pageNum] || "";
+
+  if (!text || text.trim().length < 50) {
+    alert("Not enough text on this page to generate flashcards.");
+    return;
+  }
+
+  // Switch to flashcards tab
+  switchToPanel("flashcards");
+
+  // Check cache first
+  if (!flashcardCache[tab.id]) flashcardCache[tab.id] = {};
+  if (flashcardCache[tab.id][pageNum]) {
+    loadDeck(flashcardCache[tab.id][pageNum], pageNum);
+    return;
+  }
+
+  // Show loader
+  showFcLoader(true);
+
+  try {
+    const cards = await generateFlashcards(text, pageNum);
+    if (!cards.length) {
+      showFcLoader(false);
+      showFcEmpty("AI couldn't generate cards.\nTry a different page.");
+      return;
+    }
+    flashcardCache[tab.id][pageNum] = cards;
+    saveFcCache();
+    loadDeck(cards, pageNum);
+  } catch (err) {
+    console.error("FC generation error:", err);
+    showFcLoader(false);
+    showFcEmpty("Generation failed. Check your AI settings.");
+  }
+});
+
+// ── Load a deck into the UI ───────────────────────────────
+function loadDeck(cards, pageNum) {
+  fcCards   = cards;
+  fcIndex   = 0;
+  fcFlipped = false;
+
+  showFcLoader(false);
+  document.getElementById("fc-empty").style.display  = "none";
+  document.getElementById("fc-stage").style.display  = "flex";
+  document.getElementById("fc-footer").style.display = "flex";
+
+  const tab = activeTab();
+  document.getElementById("fc-page-badge").textContent = `Page ${pageNum}`;
+  document.getElementById("fc-count-badge").textContent = `${cards.length} cards`;
+  document.getElementById("fc-tab-count").textContent   = cards.length > 0 ? `${cards.length} ` : "";
+
+  renderFcCard();
+  renderFcDots();
+}
+
+// ── Render current card ───────────────────────────────────
+function renderFcCard() {
+  const card = fcCards[fcIndex];
+  if (!card) return;
+
+  document.getElementById("fc-question").textContent = card.q;
+  document.getElementById("fc-answer").textContent   = card.a;
+
+  // Reset flip
+  fcFlipped = false;
+  document.getElementById("fc-card").classList.remove("flipped");
+
+  // Progress
+  document.getElementById("fc-progress-text").textContent = `${fcIndex + 1} / ${fcCards.length}`;
+  const pct = ((fcIndex + 1) / fcCards.length) * 100;
+  document.getElementById("fc-progress-bar").style.width = pct + "%";
+
+  // Nav buttons
+  document.getElementById("fc-prev").disabled = fcIndex === 0;
+  document.getElementById("fc-next").disabled = fcIndex === fcCards.length - 1;
+
+  // Dots
+  document.querySelectorAll(".fc-dot").forEach((d, i) => {
+    d.classList.toggle("active", i === fcIndex);
+  });
+}
+
+// ── Render dot indicators ─────────────────────────────────
+function renderFcDots() {
+  const wrap = document.getElementById("fc-dots");
+  wrap.innerHTML = "";
+  fcCards.forEach((_, i) => {
+    const dot = document.createElement("div");
+    dot.className = "fc-dot" + (i === fcIndex ? " active" : "");
+    dot.addEventListener("click", () => { fcIndex = i; renderFcCard(); });
+    wrap.appendChild(dot);
+  });
+}
+
+// ── Flip card on click ────────────────────────────────────
+document.getElementById("fc-card")?.addEventListener("click", () => {
+  fcFlipped = !fcFlipped;
+  document.getElementById("fc-card").classList.toggle("flipped", fcFlipped);
+});
+
+// ── Navigation ────────────────────────────────────────────
+document.getElementById("fc-prev")?.addEventListener("click", () => {
+  if (fcIndex > 0) { fcIndex--; renderFcCard(); }
+});
+document.getElementById("fc-next")?.addEventListener("click", () => {
+  if (fcIndex < fcCards.length - 1) { fcIndex++; renderFcCard(); }
+});
+
+// Keyboard navigation (← →  space)
+document.addEventListener("keydown", (e) => {
+  const fcPanel = document.getElementById("panel-flashcards");
+  if (!fcPanel?.classList.contains("active")) return;
+  if (e.key === "ArrowRight" && fcIndex < fcCards.length - 1) { fcIndex++; renderFcCard(); }
+  if (e.key === "ArrowLeft"  && fcIndex > 0)                  { fcIndex--; renderFcCard(); }
+  if (e.key === " " || e.key === "Enter") {
+    e.preventDefault();
+    fcFlipped = !fcFlipped;
+    document.getElementById("fc-card").classList.toggle("flipped", fcFlipped);
+  }
+});
+
+// ── Regenerate ────────────────────────────────────────────
+document.getElementById("fc-regen-btn")?.addEventListener("click", async () => {
+  const tab = activeTab();
+  if (!tab) return;
+  const pageNum = tab.currentPage;
+  // Clear cache for this page
+  if (flashcardCache[tab.id]) delete flashcardCache[tab.id][pageNum];
+
+  document.getElementById("fc-stage").style.display  = "none";
+  document.getElementById("fc-footer").style.display = "none";
+  showFcLoader(true);
+
+  try {
+    const text  = textCache[tab.id]?.[pageNum] || "";
+    const cards = await generateFlashcards(text, pageNum);
+    if (!cards.length) { showFcLoader(false); showFcEmpty("Couldn't generate cards."); return; }
+    if (!flashcardCache[tab.id]) flashcardCache[tab.id] = {};
+    flashcardCache[tab.id][pageNum] = cards;
+    saveFcCache();
+    loadDeck(cards, pageNum);
+  } catch { showFcLoader(false); showFcEmpty("Generation failed."); }
+});
+
+// ── Export to Anki-compatible .txt ────────────────────────
+document.getElementById("fc-export-btn")?.addEventListener("click", () => {
+  if (!fcCards.length) return;
+  const tab     = activeTab();
+  const pdfName = getPdfKey() || "pagewise";
+  const pageNum = tab?.currentPage || "?";
+
+  // Anki format: Q[tab]A  (importable as Basic note type)
+  let out = `#separator:tab\n#html:false\n#notetype:Basic\n`;
+  out    += `#deck:PageWise - ${pdfName} - Page ${pageNum}\n\n`;
+  fcCards.forEach(c => { out += `${c.q}\t${c.a}\n`; });
+
+  const a = Object.assign(document.createElement("a"), {
+    href:     URL.createObjectURL(new Blob([out], { type: "text/plain" })),
+    download: `pagewise-flashcards-p${pageNum}.txt`
+  });
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+// ── Helpers ───────────────────────────────────────────────
+function showFcLoader(show) {
+  document.getElementById("fc-loader").style.display = show ? "flex" : "none";
+  if (show) {
+    document.getElementById("fc-stage").style.display  = "none";
+    document.getElementById("fc-footer").style.display = "none";
+    document.getElementById("fc-empty").style.display  = "none";
+  }
+}
+
+function showFcEmpty(msg) {
+  const el = document.getElementById("fc-empty");
+  el.style.display = "flex";
+  el.innerHTML     = `<div class="ei">🃏</div><div>${msg.replace(/\n/g, "<br>")}</div>`;
+}
+
+function switchToPanel(name) {
+  document.querySelectorAll(".panel-tab").forEach(b => b.classList.remove("active"));
+  document.querySelectorAll(".panel-section").forEach(s => s.classList.remove("active"));
+  document.querySelector(`[data-panel='${name}']`).classList.add("active");
+  document.getElementById(`panel-${name}`).classList.add("active");
+}
+
+// Persist flashcard cache across sessions
+function saveFcCache() {
+  // Store per pdfKey in chrome.storage
+  const key = getPdfKey();
+  if (!key) return;
+  const tab = activeTab();
+  if (!tab) return;
+  const data = flashcardCache[tab.id] || {};
+  chrome.storage.local.set({ [`fc_${key}`]: data });
+}
+
+async function loadFcCache(tabId, pdfKey) {
+  return new Promise(resolve => {
+    chrome.storage.local.get(`fc_${pdfKey}`, data => {
+      if (data[`fc_${pdfKey}`]) flashcardCache[tabId] = data[`fc_${pdfKey}`];
+      resolve();
+    });
+  });
+}
+
+// ══════════════════════════════════════════════════════════
+// SEMANTIC SEARCH
+// ══════════════════════════════════════════════════════════
+
+let searchDebounceTimer = null;
+let lastSearchQuery     = "";
+let activeResultCard    = null;
+
+// Open search panel when toolbar button clicked
+document.getElementById("search-open-btn")?.addEventListener("click", () => {
+  document.querySelectorAll(".panel-tab").forEach(b => b.classList.remove("active"));
+  document.querySelectorAll(".panel-section").forEach(s => s.classList.remove("active"));
+  document.querySelector("[data-panel='search']").classList.add("active");
+  document.getElementById("panel-search").classList.add("active");
+  setTimeout(() => document.getElementById("search-input")?.focus(), 80);
+});
+
+// Live search with 350ms debounce
+document.getElementById("search-input")?.addEventListener("input", (e) => {
+  const q = e.target.value.trim();
+  const clearBtn = document.getElementById("search-clear-btn");
+  if (clearBtn) clearBtn.style.display = q ? "block" : "none";
+
+  clearTimeout(searchDebounceTimer);
+  if (!q) {
+    showSearchEmpty();
+    lastSearchQuery = "";
+    return;
+  }
+  // Show spinner immediately
+  showSearchSpinner();
+  searchDebounceTimer = setTimeout(() => runSemanticSearch(q), 350);
+});
+
+// Clear button
+document.getElementById("search-clear-btn")?.addEventListener("click", () => {
+  const input = document.getElementById("search-input");
+  if (input) input.value = "";
+  document.getElementById("search-clear-btn").style.display = "none";
+  showSearchEmpty();
+  lastSearchQuery = "";
+});
+
+// Also allow Enter key to search immediately
+document.getElementById("search-input")?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    clearTimeout(searchDebounceTimer);
+    const q = e.target.value.trim();
+    if (q) runSemanticSearch(q);
+  }
+});
+
+async function runSemanticSearch(query) {
+  if (query === lastSearchQuery) return;
+  lastSearchQuery = query;
+
+  const tab = activeTab();
+  if (!tab) { showSearchMeta("❌ No PDF loaded"); return; }
+
+  if (!RAG.isReady()) {
+    showSearchMeta("⏳ RAG engine still loading...");
+    showSearchEmpty("RAG index not ready yet.\nWait for the green dot in Chat tab.");
+    return;
+  }
+
+  const pdfKey = getPdfKeyForTab(tab);
+  const hasIdx = await RAG.hasIndex(pdfKey);
+  if (!hasIdx) {
+    showSearchMeta("⏳ Indexing in progress...");
+    showSearchEmpty("PDF is still being indexed.\nTry again in a moment.");
+    return;
+  }
+
+  showSearchSpinner();
+
+  try {
+    // Retrieve top 6 chunks
+    const retrieved = await RAG.retrieve(pdfKey, query, 6);
+
+    if (!retrieved.length) {
+      showSearchMeta("No results found");
+      showSearchEmpty("No matching content found.\nTry different keywords.");
+      return;
+    }
+
+    // De-duplicate by page — keep best score per page
+    const byPage = {};
+    retrieved.forEach(r => {
+      const pg = r.chunk.page;
+      if (!byPage[pg] || r.score > byPage[pg].score) byPage[pg] = r;
+    });
+    const deduped = Object.values(byPage).sort((a,b) => b.score - a.score);
+
+    showSearchMeta(`${deduped.length} results for "${query.slice(0,30)}"`);
+    renderSearchResults(deduped, query);
+  } catch (err) {
+    console.error("Search error:", err);
+    showSearchMeta("❌ Search failed");
+    showSearchEmpty("Search error. Check console.");
+  }
+}
+
+function renderSearchResults(results, query) {
+  const container = document.getElementById("search-results");
+  container.innerHTML = "";
+  activeResultCard = null;
+
+  results.forEach((r, idx) => {
+    const score   = Math.round(r.score * 100);
+    const barW    = Math.max(score, 8);
+    const excerpt = highlightQueryTerms(r.chunk.text.slice(0, 220), query);
+
+    const card = document.createElement("div");
+    card.className = "search-result-card";
+    card.innerHTML = `
+      <div class="src-header">
+        <span class="src-page-badge">📄 Page ${r.chunk.page}</span>
+        <div class="src-score-bar-wrap">
+          <span class="src-score-label">match</span>
+          <div class="src-score-bar" style="width:${barW}px"></div>
+          <span class="src-score-pct">${score}%</span>
+        </div>
+      </div>
+      <div class="src-excerpt">${excerpt}…</div>
+      <div class="src-footer">Click to jump to page ${r.chunk.page}</div>
+    `;
+
+    card.addEventListener("click", () => {
+      // Highlight active card
+      if (activeResultCard) activeResultCard.classList.remove("active-result");
+      card.classList.add("active-result");
+      activeResultCard = card;
+
+      // Jump to page
+      renderPage(r.chunk.page);
+
+      // Flash the status bar with context
+      statusEl.textContent = `🔍 Search result — Page ${r.chunk.page} (${score}% match)`;
+      setTimeout(() => {
+        const t = activeTab();
+        if (t) statusEl.textContent = `✅ Page ${t.currentPage} of ${t.pdfDoc?.numPages}`;
+      }, 3000);
+    });
+
+    container.appendChild(card);
+  });
+}
+
+// Bold the query terms in excerpt (simple word match)
+function highlightQueryTerms(text, query) {
+  const escaped = text.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const words = query.trim().split(/\s+/).filter(w => w.length > 2);
+  if (!words.length) return escaped;
+  const pattern = new RegExp(`(${words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g,'\\')).join("|")})`, "gi");
+  return escaped.replace(pattern, "<mark>$1</mark>");
+}
+
+function showSearchSpinner() {
+  const container = document.getElementById("search-results");
+  container.innerHTML = `<div class="search-spinner"><div class="search-spinner-ring"></div>Searching...</div>`;
+}
+
+function showSearchEmpty(msg) {
+  const container = document.getElementById("search-results");
+  const text = msg || "Type anything to search<br>across the entire PDF.<br><span style=\"color:var(--accent);font-size:10px\">Powered by semantic embeddings</span>";
+  container.innerHTML = `<div class="search-empty"><div class="ei">🔍</div><div>${text}</div></div>`;
+}
+
+function showSearchMeta(msg) {
+  const el = document.getElementById("search-meta");
+  if (el) el.textContent = msg;
 }
 
 // ── Init ──────────────────────────────────────────────────

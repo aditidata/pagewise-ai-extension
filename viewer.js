@@ -17,7 +17,15 @@ async function getSummary(text) {
         headers: { "Authorization": `Bearer ${config.groqKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           model: config.groqModel || "llama-3.1-8b-instant",
-          messages: [{ role: "user", content: `Summarize into bullet points for exam revision. Each bullet starts with •\n\n${text.slice(0, 3000)}` }],
+          messages: [{ role: "user", content: `Summarize this text for exam revision. Use this exact format:
+- Start each main topic with a heading line in ALL CAPS followed by a colon (e.g. "TOPIC NAME:")
+- Under each heading, write 2-4 bullet points starting with "•"
+- Keep bullet points concise (1 sentence each)
+- Do NOT write in paragraphs
+- Leave a blank line between sections
+
+Text:
+${text.slice(0, 3000)}` }],
           max_tokens: 1000
         })
       });
@@ -879,23 +887,73 @@ function showSummary(text, fromCache) {
 
 function renderHighlighted(text) {
   summaryBox.innerHTML = "";
-  text.split("\n").forEach((line, i) => {
-    const span    = document.createElement("span");
+  let delay = 0;
+
+  text.split("\n").forEach(line => {
     const trimmed = line.trim();
-    span.className = (trimmed.startsWith("•") || trimmed.startsWith("-") || trimmed.startsWith("*") || /^\d+\./.test(trimmed))
-      ? "hl-line" : "pl-line";
-    span.style.animationDelay = `${i * 35}ms`;
-    span.textContent = line || "\u00A0";
-    summaryBox.appendChild(span);
+    if (!trimmed) {
+      // Blank line spacer
+      const spacer = document.createElement("div");
+      spacer.style.height = "8px";
+      summaryBox.appendChild(spacer);
+      return;
+    }
+
+    const el = document.createElement("div");
+    el.style.animationDelay = `${delay}ms`;
+    el.style.animation = "sli .25s ease both";
+    delay += 30;
+
+    // ALL CAPS heading (e.g. "TOPIC NAME:" or "**Bold heading**")
+    const isHeading = /^[A-Z][A-Z\s]{3,}:/.test(trimmed) || /^\*\*(.+)\*\*:?$/.test(trimmed);
+    const isBullet  = trimmed.startsWith("•") || trimmed.startsWith("-") || trimmed.startsWith("*") && !trimmed.startsWith("**");
+    const isNum     = /^\d+\./.test(trimmed);
+
+    if (isHeading) {
+      el.className = "sum-heading";
+      // Strip ** markers if present
+      el.textContent = trimmed.replace(/\*\*/g, "").replace(/:$/, "").trim();
+    } else if (isBullet || isNum) {
+      el.className = "sum-bullet";
+      // Parse inline **bold** within bullet text
+      const content = trimmed.replace(/^[•\-\*]\s*/, "").replace(/^\d+\.\s*/, "");
+      el.innerHTML  = "• " + parseBold(content);
+    } else {
+      el.className = "sum-plain";
+      el.innerHTML = parseBold(trimmed);
+    }
+
+    summaryBox.appendChild(el);
   });
 }
 
+// Convert **bold** markers to <strong> tags
+function parseBold(text) {
+  return text.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+}
+
+// Keyword color palette — cycles through 6 colors
+const KW_COLORS = [
+  { text: "#7b68ee", bg: "rgba(123,104,238,0.12)", border: "rgba(123,104,238,0.25)" }, // purple
+  { text: "#38bdf8", bg: "rgba(56,189,248,0.12)",  border: "rgba(56,189,248,0.25)"  }, // blue
+  { text: "#34d399", bg: "rgba(52,211,153,0.12)",  border: "rgba(52,211,153,0.25)"  }, // green
+  { text: "#fbbf24", bg: "rgba(251,191,36,0.12)",  border: "rgba(251,191,36,0.25)"  }, // yellow
+  { text: "#f472b6", bg: "rgba(244,114,182,0.12)", border: "rgba(244,114,182,0.25)" }, // pink
+  { text: "#fb923c", bg: "rgba(251,146,60,0.12)",  border: "rgba(251,146,60,0.25)"  }, // orange
+];
+
 function renderKeywords(keywords) {
   kwWrap.innerHTML = "";
-  (keywords || []).forEach(word => {
+  (keywords || []).forEach((word, i) => {
+    const c   = KW_COLORS[i % KW_COLORS.length];
     const tag = document.createElement("span");
     tag.className   = "kw-tag";
     tag.textContent = word;
+    tag.style.color       = c.text;
+    tag.style.background  = c.bg;
+    tag.style.borderColor = c.border;
+    tag.style.animationDelay = `${i * 40}ms`;
+    tag.style.animation = "sli .3s ease both";
     kwWrap.appendChild(tag);
   });
 }

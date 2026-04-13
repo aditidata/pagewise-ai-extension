@@ -10,12 +10,19 @@
 
 <div class="topbar">
   <div class="logo">
-    <div class="logo-icon">📘</div>
+    <div class="logo-icon">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+        <rect x="3" y="3" width="18" height="18" rx="3" fill="white" opacity="0.9"/>
+        <path d="M7 8h10M7 12h7M7 16h5" stroke="#7b68ee" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+    </div>
     <div class="logo-text">Page<span>Wise</span></div>
   </div>
   <div class="divider"></div>
   <div class="tabs-wrap" id="tabs-wrap"></div>
   <button class="add-tab" id="add-tab-btn" title="Open another PDF">+</button>
+  <button class="upload-file-btn" id="upload-file-btn" title="Open DOCX, PPTX, TXT, MD file">📂 File</button>
+  <input type="file" id="file-input" accept=".pdf,.docx,.pptx,.txt,.md" style="display:none"/>
   <div class="divider"></div>
   <div class="topbar-right">
     <button class="icon-btn" id="theme-btn" title="Toggle theme">🌙</button>
@@ -58,12 +65,10 @@
 </div>
 
 <div class="main">
-  <div class="pdf-pane">
-    <div class="canvas-wrap" id="canvas-wrap">
-      <canvas id="pdf-canvas"></canvas>
-      <canvas id="highlight-canvas"></canvas>
-      <canvas id="drag-canvas"></canvas>
-      <div class="page-flash" id="page-flash"></div>
+  <div class="pdf-pane" id="pdf-pane">
+    <div class="pdf-pane-empty" id="pdf-pane-empty">
+      <div class="pane-empty-icon">📄</div>
+      <div class="pane-empty-text">Loading PDF...</div>
     </div>
   </div>
 
@@ -253,6 +258,8 @@
 </div>
 
 <script src="pdfjs/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
 <script src="rag.js"></script>
 <script src="viewer.js"></script>
 </body>

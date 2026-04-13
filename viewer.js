@@ -17,12 +17,13 @@ async function getSummary(text) {
         headers: { "Authorization": `Bearer ${config.groqKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           model: config.groqModel || "llama-3.1-8b-instant",
-          messages: [{ role: "user", content: `Summarize this text for exam revision. Use this exact format:
-- Start each main topic with a heading line in ALL CAPS followed by a colon (e.g. "TOPIC NAME:")
-- Under each heading, write 2-4 bullet points starting with "•"
-- Keep bullet points concise (1 sentence each)
-- Do NOT write in paragraphs
+          messages: [{ role: "user", content: `Summarize this text for exam revision. Rules:
+- Split into clear sections with a short heading in format: ## Heading
+- Under each heading write 2-4 bullet points starting with "•"
+- Within bullet points, wrap the single most important term or phrase in **double asterisks**
+- Keep each bullet to 1 concise sentence
 - Leave a blank line between sections
+- Do NOT write paragraphs
 
 Text:
 ${text.slice(0, 3000)}` }],
@@ -90,12 +91,14 @@ let dragEnd       = null;
 
 // ── DOM refs ──────────────────────────────────────────────
 const statusEl    = document.getElementById("status");
-const canvas      = document.getElementById("pdf-canvas");
-const hlCanvas    = document.getElementById("highlight-canvas");
-const dragCanvas  = document.getElementById("drag-canvas");
-const ctx         = canvas.getContext("2d");
-const hlCtx       = hlCanvas.getContext("2d");
-const dragCtx     = dragCanvas.getContext("2d");
+// Static canvases removed — multi-page scroll uses per-page canvases
+const noop2d = { clearRect:()=>{}, fillRect:()=>{}, beginPath:()=>{}, fill:()=>{}, roundRect:()=>{}, rect:()=>{} };
+const canvas     = { width:0, height:0, getContext:()=>noop2d };
+const hlCanvas   = { width:0, height:0, getContext:()=>noop2d };
+const dragCanvas = { width:0, height:0, getContext:()=>noop2d };
+const ctx        = noop2d;
+const hlCtx      = noop2d;
+const dragCtx    = noop2d;
 const summaryBox  = document.getElementById("summary-box");
 const pageInfo    = document.getElementById("page-info");
 const loader      = document.getElementById("loader");
@@ -103,9 +106,9 @@ const summScroll  = document.getElementById("summary-scroll");
 const cacheTag    = document.getElementById("cache-tag");
 const pageSlider  = document.getElementById("page-slider");
 const kwWrap      = document.getElementById("keywords-wrap");
-const pageFlash   = document.getElementById("page-flash");
+const pageFlash   = { classList:{ add:()=>{}, remove:()=>{} } };
 const tabsWrap    = document.getElementById("tabs-wrap");
-const canvasWrap  = document.getElementById("canvas-wrap");
+const canvasWrap  = { classList:{ add:()=>{}, remove:()=>{} } };
 const hlActionBar = document.getElementById("hl-action-bar");
 const hlModeBtn   = document.getElementById("hl-mode-btn");
 
@@ -186,45 +189,7 @@ function getCanvasPos(e) {
   };
 }
 
-// ── Drag events on dragCanvas ─────────────────────────────
-dragCanvas.addEventListener("mousedown", e => {
-  if (!hlMode) return;
-  e.preventDefault();
-  isDragging = true;
-  dragStart  = getCanvasPos(e);
-  dragEnd    = { ...dragStart };
-});
-
-dragCanvas.addEventListener("mousemove", e => {
-  if (!hlMode || !isDragging) return;
-  dragEnd = getCanvasPos(e);
-  drawDragRect();
-});
-
-dragCanvas.addEventListener("mouseup", e => {
-  if (!hlMode || !isDragging) return;
-  isDragging = false;
-  dragEnd = getCanvasPos(e);
-
-  const rect = normalizeRect(dragStart, dragEnd);
-
-  // Only save if drag area is meaningful (not just a click)
-  if (rect.w < 5 || rect.h < 5) {
-    dragCtx.clearRect(0, 0, dragCanvas.width, dragCanvas.height);
-    dragStart = null; dragEnd = null;
-    return;
-  }
-
-  saveHighlightRect(rect);
-  dragCtx.clearRect(0, 0, dragCanvas.width, dragCanvas.height);
-  dragStart = null; dragEnd = null;
-});
-
-dragCanvas.addEventListener("mouseleave", e => {
-  if (!hlMode || !isDragging) return;
-  isDragging = false;
-  dragCtx.clearRect(0, 0, dragCanvas.width, dragCanvas.height);
-});
+// ── Drag events are now handled per-page in setupDragOnAllPages() ──────────
 
 // Draw live preview rect while dragging
 function drawDragRect() {
@@ -508,13 +473,206 @@ document.getElementById("hl-clear-btn").addEventListener("click", () => {
 });
 
 // ══════════════════════════════════════════════════════════
+// FILE UPLOAD — DOCX / PPTX / TXT / MD
+// ══════════════════════════════════════════════════════════
+
+document.getElementById("upload-file-btn").addEventListener("click", () => {
+  document.getElementById("file-input").click();
+});
+
+document.getElementById("file-input").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = ""; // reset so same file can be re-uploaded
+  await openFileAsTab(file);
+});
+
+// Drag-drop onto the pdf-pane
+document.querySelector(".pdf-pane")?.addEventListener("dragover", e => e.preventDefault());
+document.querySelector(".pdf-pane")?.addEventListener("drop", async e => {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (file) await openFileAsTab(file);
+});
+
+async function openFileAsTab(file) {
+  const ext  = file.name.split(".").pop().toLowerCase();
+  const name = file.name;
+
+  // PDF — pass to existing loader
+  if (ext === "pdf") {
+    const url = URL.createObjectURL(file);
+    createTab(url, name);
+    return;
+  }
+
+  // Non-PDF — create a "doc tab"
+  const id = Date.now().toString();
+  tabs.push({ id, label: name.slice(0, 24), url: null, pdfDoc: null, currentPage: 1, isDoc: true, docFile: file });
+  summaryCache[id] = {};
+  textCache[id]    = {};
+  chatHistory[id]  = [];
+  renderTabs();
+  switchDocTab(id, file, ext);
+}
+
+async function switchDocTab(id, file, ext) {
+  activeTabId = id;
+  renderTabs();
+
+  // Hide PDF canvas area, show doc viewer
+  const pdfPane = document.querySelector(".pdf-pane");
+  pdfPane.innerHTML = `<div class="doc-loading"><div class="loader-ring"></div><div class="doc-loading-text">Extracting text from ${file.name}...</div></div>`;
+
+  // Hide PDF nav toolbar elements
+  document.querySelector(".slider-wrap").style.display = "none";
+  document.querySelector(".nav-group").style.display   = "none";
+
+  statusEl.textContent = `📂 Loading ${file.name}...`;
+
+  try {
+    let pages = []; // array of { pageNum, text }
+
+    if (ext === "txt" || ext === "md") {
+      const text = await file.text();
+      // Split into ~500 word chunks as "pages"
+      const words  = text.split(/\s+/);
+      const size   = 500;
+      for (let i = 0; i < words.length; i += size) {
+        pages.push({ pageNum: pages.length + 1, text: words.slice(i, i + size).join(" ") });
+      }
+      if (!pages.length) pages = [{ pageNum: 1, text }];
+
+    } else if (ext === "docx") {
+      const arrayBuf = await file.arrayBuffer();
+      const result   = await mammoth.extractRawText({ arrayBuffer: arrayBuf });
+      const text     = result.value;
+      const paras    = text.split(/\n{2,}/);
+      // Group paragraphs into ~400-word pages
+      let chunk = [], count = 0;
+      paras.forEach(p => {
+        const wc = p.split(/\s+/).length;
+        if (count + wc > 400 && chunk.length) {
+          pages.push({ pageNum: pages.length + 1, text: chunk.join("\n\n") });
+          chunk = []; count = 0;
+        }
+        chunk.push(p); count += wc;
+      });
+      if (chunk.length) pages.push({ pageNum: pages.length + 1, text: chunk.join("\n\n") });
+
+    } else if (ext === "pptx") {
+      pages = await extractPptxPages(file);
+    }
+
+    if (!pages.length) {
+      pdfPane.innerHTML = `<div class="doc-error">⚠ Could not extract text from this file.</div>`;
+      return;
+    }
+
+    // Store text cache
+    const tab = tabs.find(t => t.id === id);
+    if (!tab) return;
+    tab.docPages  = pages;
+    tab.totalPages = pages.length;
+    pages.forEach(p => { textCache[id][p.pageNum] = p.text; });
+
+    // Update slider
+    const slider = document.getElementById("page-slider");
+    slider.max   = pages.length;
+    slider.value = 1;
+    document.querySelector(".slider-wrap").style.display = "flex";
+    document.querySelector(".nav-group").style.display   = "flex";
+    pageInfo.textContent = `1 / ${pages.length}`;
+    document.getElementById("prev-page").disabled = true;
+    document.getElementById("next-page").disabled = pages.length <= 1;
+
+    renderDocPage(id, 1);
+    statusEl.textContent = `✅ ${file.name} — ${pages.length} section${pages.length > 1 ? "s" : ""}`;
+
+    // Load summary for first page
+    loadSummaryForPage(tab, 1);
+
+  } catch (err) {
+    console.error("File load error:", err);
+    pdfPane.innerHTML = `<div class="doc-error">❌ Error: ${err.message}</div>`;
+    statusEl.textContent = "❌ Failed to load file";
+  }
+}
+
+function renderDocPage(tabId, pageNum) {
+  const tab = tabs.find(t => t.id === tabId);
+  if (!tab || !tab.docPages) return;
+
+  tab.currentPage = pageNum;
+  pageInfo.textContent = `${pageNum} / ${tab.totalPages}`;
+  document.getElementById("page-slider").value = pageNum;
+  document.getElementById("prev-page").disabled = pageNum <= 1;
+  document.getElementById("next-page").disabled = pageNum >= tab.totalPages;
+
+  const page = tab.docPages.find(p => p.pageNum === pageNum);
+  if (!page) return;
+
+  const pdfPane = document.querySelector(".pdf-pane");
+  pdfPane.innerHTML = "";
+
+  const block = document.createElement("div");
+  block.className = "doc-page-block";
+
+  const label = document.createElement("div");
+  label.className   = "page-scroll-label";
+  label.textContent = `Section ${pageNum} of ${tab.totalPages}`;
+
+  const content = document.createElement("div");
+  content.className   = "doc-page-content";
+  content.textContent = page.text;
+
+  block.appendChild(label);
+  block.appendChild(content);
+  pdfPane.appendChild(block);
+
+  loadSummaryForPage(tab, pageNum);
+}
+
+// Extract PPTX slides as pages using JSZip
+async function extractPptxPages(file) {
+  const zip    = await JSZip.loadAsync(await file.arrayBuffer());
+  const slides = [];
+
+  // Find all slide XML files
+  const slideFiles = Object.keys(zip.files)
+    .filter(n => n.match(/^ppt\/slides\/slide\d+\.xml$/))
+    .sort((a, b) => {
+      const na = parseInt(a.match(/\d+/)?.[0] || 0);
+      const nb = parseInt(b.match(/\d+/)?.[0] || 0);
+      return na - nb;
+    });
+
+  for (const sf of slideFiles) {
+    const xml  = await zip.files[sf].async("string");
+    const text = extractTextFromXml(xml);
+    if (text.trim()) slides.push({ pageNum: slides.length + 1, text: text.trim() });
+  }
+  return slides;
+}
+
+// Strip XML tags and extract text content
+function extractTextFromXml(xml) {
+  // Get all <a:t> text elements (DrawingML text)
+  const matches = xml.match(/<a:t[^>]*>([^<]+)<\/a:t>/g) || [];
+  return matches
+    .map(m => m.replace(/<[^>]+>/g, "").trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
+// ══════════════════════════════════════════════════════════
 // PDF LOADING & RENDERING
 // ══════════════════════════════════════════════════════════
 
-function createTab(url) {
-  const id    = Date.now().toString();
-  const label = decodeURIComponent(url.split("/").pop() || "PDF").slice(0, 24);
-  tabs.push({ id, label, url, pdfDoc: null, currentPage: 1 });
+function createTab(url, label) {
+  const id  = Date.now().toString();
+  const lbl = label || decodeURIComponent(url.split("/").pop() || "PDF").slice(0, 24);
+  tabs.push({ id, label: lbl, url, pdfDoc: null, currentPage: 1 });
   summaryCache[id] = {};
   textCache[id]    = {};
   chatHistory[id]  = [];
@@ -527,14 +685,26 @@ function renderTabs() {
   tabs.forEach(tab => {
     const el = document.createElement("div");
     el.className = "tab" + (tab.id === activeTabId ? " active" : "");
-    el.innerHTML = `<span class="tab-name" title="${tab.label}">📄 ${tab.label}</span><span class="tab-x" data-id="${tab.id}">✕</span>`;
+    const icon = tab.isDoc ? getDocIcon(tab.label) : "📄";
+    el.innerHTML = `<span class="tab-name" title="${tab.label}">${icon} ${tab.label}</span><span class="tab-x" data-id="${tab.id}">✕</span>`;
     el.addEventListener("click", e => { if (!e.target.classList.contains("tab-x")) switchTab(tab.id); });
     el.querySelector(".tab-x").addEventListener("click", e => { e.stopPropagation(); closeTab(tab.id); });
     tabsWrap.appendChild(el);
   });
 }
 
+function getDocIcon(name) {
+  const ext = name.split(".").pop().toLowerCase();
+  return { docx: "📝", pptx: "📊", txt: "📃", md: "📋" }[ext] || "📄";
+}
+
 function switchTab(id) {
+  // Save current pane state before switching away
+  const prevTab = tabs.find(t => t.id === activeTabId);
+  if (prevTab && activeTabId !== id) {
+    prevTab._paneHTML = document.querySelector(".pdf-pane").innerHTML;
+  }
+
   activeTabId = id;
   renderTabs();
   const tab = tabs.find(t => t.id === id);
@@ -542,13 +712,53 @@ function switchTab(id) {
   renderChatHistory(id);
   renderHighlightsList();
   updateHighlightCount();
-  // Load flashcard cache for this tab
   const pdfKey = getPdfKeyForTab(tab);
   loadFcCache(id, pdfKey);
+
+  // Doc tab
+  if (tab.isDoc) {
+    document.querySelector(".slider-wrap").style.display = tab.docPages ? "flex" : "none";
+    document.querySelector(".nav-group").style.display   = tab.docPages ? "flex" : "none";
+    if (tab.docPages) {
+      renderDocPage(id, tab.currentPage);
+    } else {
+      const ext = tab.docFile?.name.split(".").pop().toLowerCase();
+      switchDocTab(id, tab.docFile, ext);
+    }
+    // Restore summary
+    if (summaryCache[id]?.[tab.currentPage]) {
+      showSummary(summaryCache[id][tab.currentPage], true);
+    }
+    return;
+  }
+
+  // PDF tab
+  document.querySelector(".slider-wrap").style.display = "flex";
+  document.querySelector(".nav-group").style.display   = "flex";
+
   if (tab.pdfDoc) {
     pageSlider.max   = tab.pdfDoc.numPages;
     pageSlider.value = tab.currentPage;
-    renderPage(tab.currentPage);
+    pageInfo.textContent = `${tab.currentPage} / ${tab.pdfDoc.numPages}`;
+    document.getElementById("prev-page").disabled = tab.currentPage <= 1;
+    document.getElementById("next-page").disabled = tab.currentPage >= tab.pdfDoc.numPages;
+
+    // Restore saved pane HTML if available, otherwise re-render
+    if (tab._paneHTML) {
+      document.querySelector(".pdf-pane").innerHTML = tab._paneHTML;
+      setupScrollObserver(tab);
+      setupDragOnAllPages(tab);
+      redrawHighlights();
+    } else {
+      renderPage(tab.currentPage);
+    }
+
+    // Restore summary
+    if (summaryCache[id]?.[tab.currentPage]) {
+      showSummary(summaryCache[id][tab.currentPage], true);
+    } else {
+      loadSummaryForPage(tab, tab.currentPage);
+    }
   } else {
     loadPDF(tab.url, id);
   }
@@ -581,6 +791,8 @@ function getPdfKey() {
 }
 
 async function loadPDF(url, tabId) {
+  // Strip any accidental surrounding quotes
+  url = url.replace(/^["']+|["']+$/g, "").trim();
   statusEl.textContent = "📄 Loading PDF...";
   showLoader();
   try {
@@ -744,6 +956,10 @@ async function renderAllPages(tab) {
 
   statusEl.textContent = `✅ ${numPages} pages loaded — scroll to read`;
 
+  // Cache the rendered pane for tab switching
+  const currentTab = tabs.find(t => t.id === tab.id);
+  if (currentTab) currentTab._paneHTML = null; // will be saved on next switchTab
+
   // Draw highlights on all pages
   redrawHighlights();
 
@@ -891,45 +1107,44 @@ function renderHighlighted(text) {
 
   text.split("\n").forEach(line => {
     const trimmed = line.trim();
+
+    // Blank line → small spacer
     if (!trimmed) {
-      // Blank line spacer
-      const spacer = document.createElement("div");
-      spacer.style.height = "8px";
-      summaryBox.appendChild(spacer);
+      const sp = document.createElement("div");
+      sp.style.height = "10px";
+      summaryBox.appendChild(sp);
       return;
     }
 
     const el = document.createElement("div");
-    el.style.animationDelay = `${delay}ms`;
-    el.style.animation = "sli .25s ease both";
-    delay += 30;
+    el.style.cssText = `animation: sli .22s ease both; animation-delay: ${delay}ms`;
+    delay += 25;
 
-    // ALL CAPS heading (e.g. "TOPIC NAME:" or "**Bold heading**")
-    const isHeading = /^[A-Z][A-Z\s]{3,}:/.test(trimmed) || /^\*\*(.+)\*\*:?$/.test(trimmed);
-    const isBullet  = trimmed.startsWith("•") || trimmed.startsWith("-") || trimmed.startsWith("*") && !trimmed.startsWith("**");
-    const isNum     = /^\d+\./.test(trimmed);
+    // ## Heading
+    if (trimmed.startsWith("## ") || trimmed.startsWith("# ")) {
+      el.className   = "sum-heading";
+      el.textContent = trimmed.replace(/^#+\s*/, "");
 
-    if (isHeading) {
-      el.className = "sum-heading";
-      // Strip ** markers if present
-      el.textContent = trimmed.replace(/\*\*/g, "").replace(/:$/, "").trim();
-    } else if (isBullet || isNum) {
-      el.className = "sum-bullet";
-      // Parse inline **bold** within bullet text
+    // Bullet point
+    } else if (/^[•\-\*]\s/.test(trimmed) || /^\d+\.\s/.test(trimmed)) {
+      el.className  = "sum-bullet";
       const content = trimmed.replace(/^[•\-\*]\s*/, "").replace(/^\d+\.\s*/, "");
-      el.innerHTML  = "• " + parseBold(content);
+      el.innerHTML  = `<span class="sum-dot">•</span><span class="sum-content">${parseBold(content)}</span>`;
+
+    // Fallback plain line
     } else {
-      el.className = "sum-plain";
-      el.innerHTML = parseBold(trimmed);
+      el.className  = "sum-plain";
+      el.innerHTML  = parseBold(trimmed);
     }
 
     summaryBox.appendChild(el);
   });
 }
 
-// Convert **bold** markers to <strong> tags
+// **bold** → highlighted span
 function parseBold(text) {
-  return text.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  return text.replace(/\*\*(.+?)\*\*/g,
+    '<mark class="sum-mark">$1</mark>');
 }
 
 // Keyword color palette — cycles through 6 colors
@@ -966,16 +1181,22 @@ function flashPage() {
 // ── Navigation ────────────────────────────────────────────
 document.getElementById("prev-page").addEventListener("click", () => {
   const tab = activeTab();
-  if (tab && tab.currentPage > 1) renderPage(tab.currentPage - 1);
+  if (!tab) return;
+  if (tab.isDoc && tab.currentPage > 1) renderDocPage(tab.id, tab.currentPage - 1);
+  else if (tab.pdfDoc && tab.currentPage > 1) renderPage(tab.currentPage - 1);
 });
 document.getElementById("next-page").addEventListener("click", () => {
   const tab = activeTab();
-  if (tab && tab.pdfDoc && tab.currentPage < tab.pdfDoc.numPages) renderPage(tab.currentPage + 1);
+  if (!tab) return;
+  if (tab.isDoc && tab.currentPage < tab.totalPages) renderDocPage(tab.id, tab.currentPage + 1);
+  else if (tab.pdfDoc && tab.currentPage < tab.pdfDoc.numPages) renderPage(tab.currentPage + 1);
 });
 pageSlider.addEventListener("input", () => {
   const tab = activeTab();
   const val = parseInt(pageSlider.value);
-  if (tab && val !== tab.currentPage) renderPage(val);
+  if (!tab || val === tab.currentPage) return;
+  if (tab.isDoc) renderDocPage(tab.id, val);
+  else renderPage(val);
 });
 
 // ── Copy ──────────────────────────────────────────────────
@@ -1733,9 +1954,18 @@ async function init() {
   );
 
   const params  = new URLSearchParams(window.location.search);
-  const fileUrl = params.get("file");
-  if (fileUrl) createTab(fileUrl);
-  else statusEl.textContent = "❌ No PDF URL found.";
+  let fileUrl = params.get("file");
+  if (fileUrl) {
+    // Strip any accidental surrounding quotes
+    fileUrl = fileUrl.replace(/^["']+|["']+$/g, "").trim();
+    // Ensure proper file:/// format for local paths
+    if (fileUrl.match(/^[A-Za-z]:\\/)) {
+      fileUrl = "file:///" + fileUrl.replace(/\\/g, "/");
+    }
+    createTab(fileUrl);
+  } else {
+    statusEl.textContent = "Open a PDF or use the 📂 File button to upload.";
+  }
 }
 
 function updateRagProgress(pct) {

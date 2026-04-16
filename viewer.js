@@ -77,9 +77,62 @@ async function getKeywords(text) {
 const summaryCache = {};
 const textCache    = {};
 const chatHistory  = {};
+
 let tabs        = [];
 let activeTabId = null;
 let isLight     = false;
+
+// ── RAG State ─────────────────────────────────────────────
+let isRagMode = false;  // global toggle for chat panel
+let ragReady  = false;  // RAG engine ready
+
+// RAG callbacks
+function updateRagStatus(msg) {
+  const el = document.getElementById("rag-status");
+  if (el) el.textContent = msg;
+}
+
+function updateRagReady(ready) {
+  ragReady = ready;
+  updateRagBadge(ready);
+}
+
+function updateRagProgress(pct, done, total) {
+  const bar = document.getElementById("rag-progress-bar");
+  if (bar) {
+    bar.style.width = pct + "%";
+    bar.parentElement.style.display = "block";
+  }
+}
+
+function updateRagBadge(ready) {
+  const badge = document.getElementById("rag-badge");
+  if (!badge) return;
+  badge.className = "rag-badge " + (ready ? "ready" : "loading");
+  badge.title = ready ? "RAG index ready — full PDF chat enabled" : "Building RAG index...";
+}
+
+// ── RAG Toggle ────────────────────────────────────────────
+document.addEventListener("DOMContentLoaded", () => {
+  const ragToggle = document.getElementById("rag-toggle");
+  const ragLabel  = document.getElementById("rag-mode-label");
+  
+  if (ragToggle) {
+    ragToggle.addEventListener("click", () => {
+      isRagMode = !isRagMode;
+      ragToggle.classList.toggle("active", isRagMode);
+      
+      if (ragLabel) {
+        ragLabel.textContent = isRagMode ? "🧠 Full Doc RAG" : "📄 This Page";
+      }
+      
+      const tab = activeTab();
+      if (tab && isRagMode && ragReady && !tab.hasRagIndex) {
+        indexDocumentForTab(tab);
+      }
+    });
+  }
+});
 
 // ── Highlight State ───────────────────────────────────────
 let highlights    = {};         // { pdfKey: [{ id, page, color, rect, note }] }
@@ -508,8 +561,8 @@ async function openFileAsTab(file) {
     return;
   }
 
-  if (!["docx","ppt","pptx","txt","md"].includes(ext)) {
-    alert(`Unsupported file type: .${ext}\nSupported: PDF, DOCX, PPT, PPTX, TXT, MD`);
+  if (!["docx","pptx","txt","md"].includes(ext)) {
+    alert(`Unsupported file type: .${ext}\nSupported: PDF, DOCX, PPTX, TXT, MD\n\nLegacy formats like .doc and .ppt are not supported. Please convert them to .docx or .pptx.`);
     return;
   }
 
@@ -568,7 +621,7 @@ async function switchDocTab(id, file, ext) {
       });
       if (chunk.length) pages.push({ pageNum: pages.length + 1, text: chunk.join("\n\n") });
 
-    } else if (ext === "ppt" || ext === "pptx") {
+    } else if (ext === "pptx") {
       pages = await extractPptxPages(file);
     }
 
@@ -818,10 +871,7 @@ async function loadPDF(url, tabId) {
     const tab = tabs.find(t => t.id === tabId);
     if (!tab) return;
     tab.pdfDoc = pdf;
-
-
-    // Background RAG removed.
-
+    tab.hasRagIndex = false;  // Reset RAG flag
 
     if (activeTabId !== tabId) return;
 
@@ -838,8 +888,50 @@ async function loadPDF(url, tabId) {
   }
 }
 
+// ── RAG Document Indexing ─────────────────────────────────
+async function indexDocumentForTab(tab) {
+  const pdfKey = getPdfKeyForTab(tab);
+  updateRagStatus("🔍 Checking RAG cache...");
+  
+  // Check if already indexed
+  const hasIndex = await RAG.hasIndex(pdfKey);
+  if (hasIndex) {
+    tab.hasRagIndex = true;
+    const stats = RAG.getStats(pdfKey);
+    updateRagStatus(`✅ RAG restored (${stats?.chunks || 0} chunks)`);
+    updateRagReady(true);
+    return;
+  }
+
+  // Build pageTexts from cache
+  const pageTexts = {};
+  Object.keys(textCache[tab.id] || {}).forEach(pg => {
+    pageTexts[parseInt(pg)] = textCache[tab.id][pg];
+  });
+
+  if (!Object.keys(pageTexts).length) {
+    updateRagStatus("⚠️ No text to index");
+    return;
+  }
+
+  try {
+    const index = await RAG.indexDocument(pdfKey, pageTexts);
+    if (index) {
+      tab.hasRagIndex = true;
+      const stats = RAG.getStats(pdfKey);
+      updateRagStatus(`✅ RAG indexed (${stats.chunks} chunks, ${stats.pages} pages)`);
+      updateRagReady(true);
+    }
+  } catch (err) {
+    console.error("RAG indexing failed:", err);
+    updateRagStatus("❌ RAG indexing failed");
+  }
+}
+
 // RAG indexing removed
 function getPdfKeyForTab(tab) {
+  if (tab.isDoc && tab.docFile) return decodeURIComponent(tab.docFile.name);
+  if (!tab.url) return "unknown_doc_" + tab.id;
   return decodeURIComponent(tab.url.split("/").pop() || tab.url);
 }
 
@@ -1378,17 +1470,35 @@ async function sendChat() {
   if (!question) return;
   const tab = activeTab();
   if (!tab) return;
-  const context = textCache[tab.id]?.[tab.currentPage] || "";
+  
+  // ── Get context based on RAG toggle ──────────────────────
+  let context = "";
+  const useRag = isRagMode && ragReady && tab.hasRagIndex;
+  
+  if (useRag) {
+    const pdfKey = getPdfKeyForTab(tab);
+    const retrieved = await RAG.retrieve(pdfKey, question, 4);
+    context = RAG.buildContext(retrieved);
+    tab._lastSourcePages = RAG.getSourcePages(retrieved);
+  } else {
+    context = textCache[tab.id]?.[tab.currentPage] || "";
+    tab._lastSourcePages = [tab.currentPage];
+  }
+  
   input.value   = "";
   send.disabled = true;
   appendBubble("user", question);
-  const thinking = appendBubble("thinking", "⏳ thinking...");
-  const answer   = await askChat(question, context);
+  const thinking = appendBubble("ai", "⏳ thinking...");
+  
+  const answer = await askChat(question, context);
   thinking.remove();
   appendBubble("ai", answer);
-
-  // Source citations removed because RAG is removed
-
+  
+  // ── Show source citations if RAG or multi-page ───────────
+  if (tab._lastSourcePages?.length > 1 || useRag) {
+    appendSourceCitation(tab._lastSourcePages);
+  }
+  
   chatHistory[tab.id].push({ user: question, assistant: answer });
   send.disabled = false;
 }
@@ -1872,6 +1982,11 @@ document.getElementById("fs-copy-btn")?.addEventListener("click", () => {
 
 // ── Init ──────────────────────────────────────────────────
 async function init() {
+  // Init RAG engine
+  if (typeof RAG !== "undefined") {
+    RAG.init(updateRagStatus, updateRagReady, updateRagProgress);
+  }
+
   await loadHighlights();
 
   const params  = new URLSearchParams(window.location.search);
@@ -1883,7 +1998,29 @@ async function init() {
     if (fileUrl.match(/^[A-Za-z]:\\/)) {
       fileUrl = "file:///" + fileUrl.replace(/\\/g, "/");
     }
-    createTab(fileUrl);
+    // Check if it's a non-PDF file
+    const extMatch = fileUrl.match(/\.(docx|pptx|txt|md)(?:\?.*)?$/i);
+    if (extMatch) {
+      if (fileUrl.startsWith("file:///")) {
+        statusEl.textContent = "Cannot load local MS Office file automatically.";
+        alert("Chrome security policy blocks local non-PDF documents from loading automatically via URL. Please click the 📂 File button at the top left to manually select your " + extMatch[1].toUpperCase() + " file.");
+        return;
+      }
+      statusEl.textContent = "📂 Fetching document...";
+      fetch(fileUrl)
+        .then(res => res.blob())
+        .then(blob => {
+          const fileName = decodeURIComponent(fileUrl.split("/").pop().split("?")[0]) || `document.${extMatch[1]}`;
+          const file = new File([blob], fileName, { type: blob.type });
+          openFileAsTab(file);
+        })
+        .catch(err => {
+          console.error("Fetch error:", err);
+          createTab(fileUrl);
+        });
+    } else {
+      createTab(fileUrl);
+    }
   } else {
     statusEl.textContent = "Open a document or use the 📂 File button to upload.";
   }

@@ -23,7 +23,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("check-btn").addEventListener("click", async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const url = tab.url || "";
-    if (url.toLowerCase().includes(".pdf")) {
+    if (url.match(/\.(pdf|docx|pptx|txt|md)(?:\?.*)?$/i) || url.toLowerCase().includes(".pdf")) {
       const viewerUrl = chrome.runtime.getURL("viewer.html") + "?file=" + encodeURIComponent(url);
       chrome.tabs.create({ url: viewerUrl });
     } else {

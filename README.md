@@ -190,11 +190,11 @@ Returns answer grounded in page content only.
 - [x] Multi-PDF tab support
 - [x] Dark / Light mode
 - [x] Export summaries
-- [ ] Chrome Web Store / Edge Add-ons publish
-- [ ] Highlight keywords directly on PDF canvas
-- [ ] Auto-start backend (no manual server needed)
-- [ ] User-selectable Groq models
-- [ ] Save chat history per document
+- [x] Chrome Web Store / Edge Add-ons publish
+- [x] Highlight keywords directly on PDF canvas
+- [x] Auto-start backend (no manual server needed)
+- [x] User-selectable Groq models
+- [x] Save chat history per document
 - [ ] Firefox support
 
 ---

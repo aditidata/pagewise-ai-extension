@@ -287,9 +287,7 @@ function extractTextFromRect(rect, tabId, pageNum) {
   return matched.map(i => i.str).join(" ").replace(/\s+/g, " ").trim();
 }
 
-// ── RAG State ─────────────────────────────────────────────
-let ragMode     = false;  // false = this page, true = full-PDF RAG
-let ragIndexing = {};     // { tabId: true } while indexing
+
 
 // ── Text items cache (for text extraction under rects) ────
 const textItemsCache = {}; // { tabId: { pageNum: [{x,y,w,h,str}] } }
@@ -340,8 +338,9 @@ function redrawHighlights() {
   });
 
   // Draw on each page's hl canvas
+  const currentTabId = activeTabId;
   Object.entries(byPage).forEach(([pg, hls]) => {
-    const block = document.getElementById(`page-block-${pg}`);
+    const block = document.getElementById(`page-block-${currentTabId}-${pg}`);
     if (!block) return;
     const hlc  = block.querySelector(".hl-overlay");
     if (!hlc) return;
@@ -481,53 +480,59 @@ document.getElementById("upload-file-btn").addEventListener("click", () => {
 });
 
 document.getElementById("file-input").addEventListener("change", async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  e.target.value = ""; // reset so same file can be re-uploaded
-  await openFileAsTab(file);
+  const files = e.target.files;
+  if (!files || files.length === 0) return;
+  for (let i = 0; i < files.length; i++) {
+    await openFileAsTab(files[i]);
+  }
+  e.target.value = "";
 });
 
 // Drag-drop onto the pdf-pane
-document.querySelector(".pdf-pane")?.addEventListener("dragover", e => e.preventDefault());
-document.querySelector(".pdf-pane")?.addEventListener("drop", async e => {
+document.addEventListener("dragover", e => e.preventDefault());
+document.addEventListener("drop", async e => {
   e.preventDefault();
-  const file = e.dataTransfer.files[0];
-  if (file) await openFileAsTab(file);
+  const files = e.dataTransfer.files;
+  if (!files) return;
+  for (let i = 0; i < files.length; i++) {
+    await openFileAsTab(files[i]);
+  }
 });
 
 async function openFileAsTab(file) {
   const ext  = file.name.split(".").pop().toLowerCase();
-  const name = file.name;
 
-  // PDF — pass to existing loader
   if (ext === "pdf") {
     const url = URL.createObjectURL(file);
-    createTab(url, name);
+    createTab(url, file.name.slice(0, 28));
     return;
   }
 
-  // Non-PDF — create a "doc tab"
-  const id = Date.now().toString();
-  tabs.push({ id, label: name.slice(0, 24), url: null, pdfDoc: null, currentPage: 1, isDoc: true, docFile: file });
+  if (!["docx","ppt","pptx","txt","md"].includes(ext)) {
+    alert(`Unsupported file type: .${ext}\nSupported: PDF, DOCX, PPT, PPTX, TXT, MD`);
+    return;
+  }
+
+  // Non-PDF — create doc tab
+  const id = Date.now().toString() + "-" + Math.random().toString(36).substr(2, 5);
+  tabs.push({ id, label: file.name.slice(0, 28), url: null, pdfDoc: null, currentPage: 1, isDoc: true, docFile: file });
   summaryCache[id] = {};
   textCache[id]    = {};
   chatHistory[id]  = [];
   renderTabs();
-  switchDocTab(id, file, ext);
+  // Instead of manually doing everything, we now use switchTab which caches the active tab before switching!
+  switchTab(id);
 }
 
 async function switchDocTab(id, file, ext) {
-  activeTabId = id;
-  renderTabs();
+  // activeTabId and caching are now handled by switchTab before this gets called.
+  const pdfPane = document.getElementById("pdf-pane") || document.getElementById("pdf-pane");
+  if (activeTabId === id) {
+    pdfPane.innerHTML = `<div class="doc-loading"><div class="loader-ring"></div><div class="doc-loading-text">Extracting from ${file.name}...</div></div>`;
+  }
 
-  // Hide PDF canvas area, show doc viewer
-  const pdfPane = document.querySelector(".pdf-pane");
-  pdfPane.innerHTML = `<div class="doc-loading"><div class="loader-ring"></div><div class="doc-loading-text">Extracting text from ${file.name}...</div></div>`;
-
-  // Hide PDF nav toolbar elements
   document.querySelector(".slider-wrap").style.display = "none";
   document.querySelector(".nav-group").style.display   = "none";
-
   statusEl.textContent = `📂 Loading ${file.name}...`;
 
   try {
@@ -544,6 +549,9 @@ async function switchDocTab(id, file, ext) {
       if (!pages.length) pages = [{ pageNum: 1, text }];
 
     } else if (ext === "docx") {
+      if (typeof mammoth === "undefined") {
+        throw new Error("Mammoth library not found. Please run:\nInvoke-WebRequest -Uri 'https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js' -OutFile 'lib\\mammoth.min.js'");
+      }
       const arrayBuf = await file.arrayBuffer();
       const result   = await mammoth.extractRawText({ arrayBuffer: arrayBuf });
       const text     = result.value;
@@ -560,12 +568,12 @@ async function switchDocTab(id, file, ext) {
       });
       if (chunk.length) pages.push({ pageNum: pages.length + 1, text: chunk.join("\n\n") });
 
-    } else if (ext === "pptx") {
+    } else if (ext === "ppt" || ext === "pptx") {
       pages = await extractPptxPages(file);
     }
 
     if (!pages.length) {
-      pdfPane.innerHTML = `<div class="doc-error">⚠ Could not extract text from this file.</div>`;
+      if (activeTabId === id) pdfPane.innerHTML = `<div class="doc-error">⚠ Could not extract text from this file.</div>`;
       return;
     }
 
@@ -576,26 +584,30 @@ async function switchDocTab(id, file, ext) {
     tab.totalPages = pages.length;
     pages.forEach(p => { textCache[id][p.pageNum] = p.text; });
 
-    // Update slider
-    const slider = document.getElementById("page-slider");
-    slider.max   = pages.length;
-    slider.value = 1;
-    document.querySelector(".slider-wrap").style.display = "flex";
-    document.querySelector(".nav-group").style.display   = "flex";
-    pageInfo.textContent = `1 / ${pages.length}`;
-    document.getElementById("prev-page").disabled = true;
-    document.getElementById("next-page").disabled = pages.length <= 1;
+    // Update UI only if still active
+    if (activeTabId === id) {
+      const slider = document.getElementById("page-slider");
+      slider.max   = pages.length;
+      slider.value = 1;
+      document.querySelector(".slider-wrap").style.display = "flex";
+      document.querySelector(".nav-group").style.display   = "flex";
+      pageInfo.textContent = `1 / ${pages.length}`;
+      document.getElementById("prev-page").disabled = true;
+      document.getElementById("next-page").disabled = pages.length <= 1;
 
-    renderDocPage(id, 1);
-    statusEl.textContent = `✅ ${file.name} — ${pages.length} section${pages.length > 1 ? "s" : ""}`;
+      renderDocPage(id, 1);
+      statusEl.textContent = `✅ ${file.name} — ${pages.length} section${pages.length > 1 ? "s" : ""}`;
+    }
 
-    // Load summary for first page
+    // Always fetch summary regardless of active, so they process in background
     loadSummaryForPage(tab, 1);
 
   } catch (err) {
     console.error("File load error:", err);
-    pdfPane.innerHTML = `<div class="doc-error">❌ Error: ${err.message}</div>`;
-    statusEl.textContent = "❌ Failed to load file";
+    if (activeTabId === id) {
+      pdfPane.innerHTML = `<div class="doc-error">❌ Error: ${err.message}</div>`;
+      statusEl.textContent = "❌ Failed to load file";
+    }
   }
 }
 
@@ -612,7 +624,7 @@ function renderDocPage(tabId, pageNum) {
   const page = tab.docPages.find(p => p.pageNum === pageNum);
   if (!page) return;
 
-  const pdfPane = document.querySelector(".pdf-pane");
+  const pdfPane = document.getElementById("pdf-pane");
   pdfPane.innerHTML = "";
 
   const block = document.createElement("div");
@@ -635,6 +647,9 @@ function renderDocPage(tabId, pageNum) {
 
 // Extract PPTX slides as pages using JSZip
 async function extractPptxPages(file) {
+  if (typeof JSZip === "undefined") {
+    throw new Error("JSZip library not found. Please run:\nInvoke-WebRequest -Uri 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js' -OutFile 'lib\\jszip.min.js'");
+  }
   const zip    = await JSZip.loadAsync(await file.arrayBuffer());
   const slides = [];
 
@@ -670,7 +685,7 @@ function extractTextFromXml(xml) {
 // ══════════════════════════════════════════════════════════
 
 function createTab(url, label) {
-  const id  = Date.now().toString();
+  const id  = Date.now().toString() + "-" + Math.random().toString(36).substr(2, 5);
   const lbl = label || decodeURIComponent(url.split("/").pop() || "PDF").slice(0, 24);
   tabs.push({ id, label: lbl, url, pdfDoc: null, currentPage: 1 });
   summaryCache[id] = {};
@@ -695,14 +710,15 @@ function renderTabs() {
 
 function getDocIcon(name) {
   const ext = name.split(".").pop().toLowerCase();
-  return { docx: "📝", pptx: "📊", txt: "📃", md: "📋" }[ext] || "📄";
+  return { docx: "📝", ppt: "📊", pptx: "📊", txt: "📃", md: "📋" }[ext] || "📄";
 }
 
 function switchTab(id) {
   // Save current pane state before switching away
   const prevTab = tabs.find(t => t.id === activeTabId);
   if (prevTab && activeTabId !== id) {
-    prevTab._paneHTML = document.querySelector(".pdf-pane").innerHTML;
+    const pane = document.getElementById("pdf-pane");
+    prevTab._paneNodes = Array.from(pane.childNodes);
   }
 
   activeTabId = id;
@@ -743,9 +759,11 @@ function switchTab(id) {
     document.getElementById("prev-page").disabled = tab.currentPage <= 1;
     document.getElementById("next-page").disabled = tab.currentPage >= tab.pdfDoc.numPages;
 
-    // Restore saved pane HTML if available, otherwise re-render
-    if (tab._paneHTML) {
-      document.querySelector(".pdf-pane").innerHTML = tab._paneHTML;
+    // Restore saved pane nodes if available, otherwise re-render
+    if (tab._paneNodes) {
+      const pane = document.getElementById("pdf-pane");
+      pane.innerHTML = "";
+      tab._paneNodes.forEach(node => pane.appendChild(node));
       setupScrollObserver(tab);
       setupDragOnAllPages(tab);
       redrawHighlights();
@@ -800,56 +818,27 @@ async function loadPDF(url, tabId) {
     const tab = tabs.find(t => t.id === tabId);
     if (!tab) return;
     tab.pdfDoc = pdf;
+
+
+    // Background RAG removed.
+
+
+    if (activeTabId !== tabId) return;
+
     pageSlider.max   = pdf.numPages;
     pageSlider.value = 1;
     statusEl.textContent = `✅ Loaded — ${pdf.numPages} pages`;
     renderPage(1);
 
-    // Kick off background RAG indexing (non-blocking)
-    indexPDFForRAG(tab);
   } catch (err) {
-    statusEl.textContent = "❌ Error loading PDF: " + err.message;
-    hideLoader();
-  }
-}
-
-// ── RAG: extract all pages then index ─────────────────────
-async function indexPDFForRAG(tab) {
-  if (ragIndexing[tab.id]) return;
-  ragIndexing[tab.id] = true;
-  updateRagStatus("⏳ Preparing RAG index...");
-
-  try {
-    const pageTexts = {};
-    // Extract text from all pages (runs alongside normal rendering)
-    for (let pg = 1; pg <= tab.pdfDoc.numPages; pg++) {
-      if (textCache[tab.id]?.[pg]) {
-        pageTexts[pg] = textCache[tab.id][pg];
-      } else {
-        const page    = await tab.pdfDoc.getPage(pg);
-        const tc      = await page.getTextContent();
-        const text    = tc.items.map(i => i.str).join(" ");
-        textCache[tab.id][pg] = text;
-        pageTexts[pg] = text;
-      }
+    if (activeTabId === tabId) {
+      statusEl.textContent = "❌ Error loading PDF: " + err.message;
+      hideLoader();
     }
-
-    // Index using RAG engine
-    const pdfKey = getPdfKeyForTab(tab);
-    await RAG.indexDocument(pdfKey, pageTexts);
-
-    // Update UI
-    const stats = RAG.getStats(pdfKey);
-    updateRagStatus(`✅ RAG ready — ${stats?.chunks || 0} chunks indexed`);
-    updateRagBadge(true);
-  } catch (err) {
-    console.error("RAG indexing failed:", err);
-    updateRagStatus("⚠️ RAG indexing failed");
-  } finally {
-    ragIndexing[tab.id] = false;
   }
 }
 
+// RAG indexing removed
 function getPdfKeyForTab(tab) {
   return decodeURIComponent(tab.url.split("/").pop() || tab.url);
 }
@@ -877,7 +866,7 @@ async function renderPage(pageNum) {
   document.getElementById("next-page").disabled = pageNum >= tab.pdfDoc.numPages;
 
   // If all pages already rendered, just scroll to that page
-  const existing = document.getElementById(`page-block-${pageNum}`);
+  const existing = document.getElementById(`page-block-${tab.id}-${pageNum}`);
   if (existing) {
     existing.scrollIntoView({ behavior: "smooth", block: "start" });
     updateCurrentPageFromScroll(pageNum, tab);
@@ -890,26 +879,27 @@ async function renderPage(pageNum) {
 
 async function renderAllPages(tab) {
   if (!tab || !tab.pdfDoc) return;
-  const pdfPane = document.querySelector(".pdf-pane");
+  const pdfPane = document.getElementById("pdf-pane");
   pdfPane.innerHTML = ""; // clear
 
   const numPages = tab.pdfDoc.numPages;
   statusEl.textContent = `📄 Loading ${numPages} pages...`;
 
+  // Get pane width — wait a frame if needed so layout is complete
+  await new Promise(r => requestAnimationFrame(r));
+  const paneW = Math.max(pdfPane.clientWidth - 48, 600);
+
   for (let pg = 1; pg <= numPages; pg++) {
-    // Page wrapper
     const block = document.createElement("div");
-    block.id        = `page-block-${pg}`;
-    block.className = "page-scroll-block";
+    block.id           = `page-block-${tab.id}-${pg}`;
+    block.className    = "page-scroll-block";
     block.dataset.page = pg;
 
-    // Page number label
     const label = document.createElement("div");
     label.className   = "page-scroll-label";
-    label.textContent = `Page ${pg}`;
+    label.textContent = `PAGE ${pg}`;
     block.appendChild(label);
 
-    // Canvas wrap with 3 canvases
     const wrap = document.createElement("div");
     wrap.className = "canvas-wrap";
 
@@ -917,7 +907,6 @@ async function renderAllPages(tab) {
     const hlc = document.createElement("canvas");
     const dgc = document.createElement("canvas");
     hlc.className = "hl-overlay";
-    dgc.className = "drag-overlay";
     hlc.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";
     dgc.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";
 
@@ -927,38 +916,44 @@ async function renderAllPages(tab) {
     block.appendChild(wrap);
     pdfPane.appendChild(block);
 
-    // Render page into canvas
     try {
       const page     = await tab.pdfDoc.getPage(pg);
-      const paneW    = pdfPane.clientWidth - 40;
       const unscaled = page.getViewport({ scale: 1 });
-      const scale    = Math.min(paneW / unscaled.width, 1.8);
+      const scale    = Math.max(0.5, Math.min(paneW / unscaled.width, 2.0));
       const viewport = page.getViewport({ scale });
 
-      cv.width  = hlc.width  = dgc.width  = viewport.width;
-      cv.height = hlc.height = dgc.height = viewport.height;
+      cv.width  = hlc.width  = dgc.width  = Math.floor(viewport.width);
+      cv.height = hlc.height = dgc.height = Math.floor(viewport.height);
 
-      await page.render({ canvasContext: cv.getContext("2d"), viewport }).promise;
+      const renderCtx = cv.getContext("2d");
+      await page.render({ canvasContext: renderCtx, viewport }).promise;
 
-      // Cache text
       const textContent = await page.getTextContent();
       const pageText    = textContent.items.map(i => i.str).join(" ");
       textCache[tab.id][pg] = pageText;
       cacheTextItems(textContent, viewport, tab.id, pg);
 
-      // Store refs for highlights
-      tab.canvases = tab.canvases || {};
-      tab.canvases[pg] = { cv, hlc, dgc, viewport };
+      tab.canvases       = tab.canvases || {};
+      tab.canvases[pg]   = { cv, hlc, dgc, viewport };
 
       statusEl.textContent = `📄 Rendered ${pg} / ${numPages}`;
-    } catch (e) { console.error("Page render error pg", pg, e); }
+    } catch (e) {
+      console.error("Page render error pg", pg, e);
+      cv.width = paneW; cv.height = 200;
+      const ec = cv.getContext("2d");
+      ec.fillStyle = "#1a1a2e";
+      ec.fillRect(0, 0, cv.width, cv.height);
+      ec.fillStyle = "#f87171";
+      ec.font = "14px monospace";
+      ec.fillText(`⚠ Error rendering page ${pg}`, 20, 100);
+    }
   }
 
   statusEl.textContent = `✅ ${numPages} pages loaded — scroll to read`;
 
   // Cache the rendered pane for tab switching
   const currentTab = tabs.find(t => t.id === tab.id);
-  if (currentTab) currentTab._paneHTML = null; // will be saved on next switchTab
+  if (currentTab) currentTab._paneNodes = null; // will be saved on next switchTab
 
   // Draw highlights on all pages
   redrawHighlights();
@@ -967,7 +962,7 @@ async function renderAllPages(tab) {
   setupScrollObserver(tab);
 
   // Scroll to currentPage
-  const target = document.getElementById(`page-block-${tab.currentPage}`);
+  const target = document.getElementById(`page-block-${tab.id}-${tab.currentPage}`);
   if (target) target.scrollIntoView({ block: "start" });
 
   // Load summary for first page
@@ -979,7 +974,7 @@ async function renderAllPages(tab) {
 
 // ── Scroll observer — updates page number as user scrolls ─
 function setupScrollObserver(tab) {
-  const pdfPane = document.querySelector(".pdf-pane");
+  const pdfPane = document.getElementById("pdf-pane");
   const observer = new IntersectionObserver((entries) => {
     let best = null, bestRatio = 0;
     entries.forEach(e => {
@@ -1310,32 +1305,10 @@ async function askChat(question, context) {
   const tab     = activeTab();
   if (!tab) return "No PDF loaded.";
 
-  // ── RAG MODE: retrieve relevant chunks from full document ──
-  if (ragMode) {
-    const pdfKey = getPdfKeyForTab(tab);
-    let retrieved = [];
-    try {
-      retrieved = await RAG.retrieve(pdfKey, question);
-    } catch (e) { console.warn("RAG retrieve failed", e); }
-
-    if (retrieved.length) {
-      context = RAG.buildContext(retrieved);
-      const sourcePages = RAG.getSourcePages(retrieved);
-      // Tag answer with source pages after LLM responds
-      tab._lastSourcePages = sourcePages;
-    } else {
-      // Fallback to current page if RAG failed
-      context = textCache[tab.id]?.[tab.currentPage] || "";
-      tab._lastSourcePages = [tab.currentPage];
-    }
-  } else {
-    tab._lastSourcePages = [tab.currentPage];
-  }
+  tab._lastSourcePages = [tab.currentPage];
 
   // ── Call LLM ───────────────────────────────────────────────
-  const modeNote = ragMode
-    ? "Answer based on the document excerpts below. Cite page numbers when relevant."
-    : "Answer based ONLY on this page text.";
+  const modeNote = "Answer based ONLY on this page text.";
 
   if (config.backend === "groq") {
     try {
@@ -1414,10 +1387,7 @@ async function sendChat() {
   thinking.remove();
   appendBubble("ai", answer);
 
-  // Show source page citations if in RAG mode
-  if (ragMode && tab._lastSourcePages?.length) {
-    appendSourceCitation(tab._lastSourcePages);
-  }
+  // Source citations removed because RAG is removed
 
   chatHistory[tab.id].push({ user: question, assistant: answer });
   send.disabled = false;
@@ -1770,188 +1740,139 @@ async function loadFcCache(tabId, pdfKey) {
 }
 
 // ══════════════════════════════════════════════════════════
-// SEMANTIC SEARCH
+// FULL DOCUMENT SUMMARY
 // ══════════════════════════════════════════════════════════
 
-let searchDebounceTimer = null;
-let lastSearchQuery     = "";
-let activeResultCard    = null;
-
-// Open search panel when toolbar button clicked
-document.getElementById("search-open-btn")?.addEventListener("click", () => {
-  document.querySelectorAll(".panel-tab").forEach(b => b.classList.remove("active"));
-  document.querySelectorAll(".panel-section").forEach(s => s.classList.remove("active"));
-  document.querySelector("[data-panel='search']").classList.add("active");
-  document.getElementById("panel-search").classList.add("active");
-  setTimeout(() => document.getElementById("search-input")?.focus(), 80);
-});
-
-// Live search with 350ms debounce
-document.getElementById("search-input")?.addEventListener("input", (e) => {
-  const q = e.target.value.trim();
-  const clearBtn = document.getElementById("search-clear-btn");
-  if (clearBtn) clearBtn.style.display = q ? "block" : "none";
-
-  clearTimeout(searchDebounceTimer);
-  if (!q) {
-    showSearchEmpty();
-    lastSearchQuery = "";
-    return;
-  }
-  // Show spinner immediately
-  showSearchSpinner();
-  searchDebounceTimer = setTimeout(() => runSemanticSearch(q), 350);
-});
-
-// Clear button
-document.getElementById("search-clear-btn")?.addEventListener("click", () => {
-  const input = document.getElementById("search-input");
-  if (input) input.value = "";
-  document.getElementById("search-clear-btn").style.display = "none";
-  showSearchEmpty();
-  lastSearchQuery = "";
-});
-
-// Also allow Enter key to search immediately
-document.getElementById("search-input")?.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") {
-    clearTimeout(searchDebounceTimer);
-    const q = e.target.value.trim();
-    if (q) runSemanticSearch(q);
-  }
-});
-
-async function runSemanticSearch(query) {
-  if (query === lastSearchQuery) return;
-  lastSearchQuery = query;
-
+document.getElementById("generate-full-summ-btn")?.addEventListener("click", async () => {
   const tab = activeTab();
-  if (!tab) { showSearchMeta("❌ No PDF loaded"); return; }
-
-  if (!RAG.isReady()) {
-    showSearchMeta("⏳ RAG engine still loading...");
-    showSearchEmpty("RAG index not ready yet.\nWait for the green dot in Chat tab.");
+  if (!tab) return;
+  
+  // Aggregate text from all pages
+  const pages = textCache[tab.id];
+  if (!pages || Object.keys(pages).length === 0) {
+    alert("No text found. Wait for the document to finish loading, or ensure the file has text.");
     return;
   }
+  
+  const loader = document.getElementById("fs-loader");
+  const scroll = document.getElementById("fs-scroll");
+  const empty  = document.getElementById("fs-empty");
+  const box    = document.getElementById("fs-summary-box");
+  const footer = document.getElementById("fs-footer");
 
-  const pdfKey = getPdfKeyForTab(tab);
-  const hasIdx = await RAG.hasIndex(pdfKey);
-  if (!hasIdx) {
-    showSearchMeta("⏳ Indexing in progress...");
-    showSearchEmpty("PDF is still being indexed.\nTry again in a moment.");
-    return;
+  empty.style.display  = "none";
+  scroll.style.display = "none";
+  footer.style.display = "none";
+  loader.style.display = "flex";
+  
+  // Concatenate all text
+  let fullText = "";
+  for (let i = 1; i <= Object.keys(pages).length; i++) {
+    if (pages[i]) fullText += `\n--- Page ${i} ---\n` + pages[i];
+  }
+  
+  // Truncate to avoid blowing up context window (e.g. max ~15000 chars for small models)
+  if (fullText.length > 20000) {
+    fullText = fullText.slice(0, 20000) + "\n...[TRUNCATED_DUE_TO_LENGTH]...";
   }
 
-  showSearchSpinner();
+  const prompt = `You are an expert analyst. Provide a comprehensive summary of the WHOLE document provided below.
+Break your summary into logical sections using markdown headers (## Header).
+Use bullet points for key takeaways. Keep it professional and concise.
 
-  try {
-    // Retrieve top 6 chunks
-    const retrieved = await RAG.retrieve(pdfKey, query, 6);
+DOCUMENT CONTENT:
+${fullText}`;
 
-    if (!retrieved.length) {
-      showSearchMeta("No results found");
-      showSearchEmpty("No matching content found.\nTry different keywords.");
-      return;
+  const config = await getSettings();
+  
+  if (config.backend === "groq") {
+    try {
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${config.groqKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          model: config.groqModel || "llama-3.1-8b-instant", 
+          messages: [{ role: "user", content: prompt }], 
+          max_tokens: 1500 
+        })
+      });
+      const data = await res.json();
+      const ans = data.choices[0].message.content;
+      
+      loader.style.display = "none";
+      scroll.style.display = "block";
+      footer.style.display = "flex";
+      renderHighlightedSummary(ans, box);
+    } catch (err) {
+      loader.style.display = "none";
+      empty.style.display  = "flex";
+      empty.innerHTML = `<div class="ei">❌</div><div>Gross error generating full summary.<br>${err.message}</div>`;
     }
-
-    // De-duplicate by page — keep best score per page
-    const byPage = {};
-    retrieved.forEach(r => {
-      const pg = r.chunk.page;
-      if (!byPage[pg] || r.score > byPage[pg].score) byPage[pg] = r;
-    });
-    const deduped = Object.values(byPage).sort((a,b) => b.score - a.score);
-
-    showSearchMeta(`${deduped.length} results for "${query.slice(0,30)}"`);
-    renderSearchResults(deduped, query);
-  } catch (err) {
-    console.error("Search error:", err);
-    showSearchMeta("❌ Search failed");
-    showSearchEmpty("Search error. Check console.");
+  } else {
+    try {
+      const url = config.ollamaUrl || "http://localhost:5000";
+      const res = await fetch(`${url}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // Fallback or old local API
+        body: JSON.stringify({ question: prompt, context: prompt, history: [] })
+      });
+      const data = await res.json();
+      
+      loader.style.display = "none";
+      scroll.style.display = "block";
+      footer.style.display = "flex";
+      renderHighlightedSummary(data.answer, box);
+    } catch {
+      loader.style.display = "none";
+      empty.style.display  = "flex";
+      empty.innerHTML = `<div class="ei">❌</div><div>Failed to reach Ollama backend. Ensure it is running.</div>`;
+    }
   }
-}
+});
 
-function renderSearchResults(results, query) {
-  const container = document.getElementById("search-results");
+function renderHighlightedSummary(text, container) {
   container.innerHTML = "";
-  activeResultCard = null;
-
-  results.forEach((r, idx) => {
-    const score   = Math.round(r.score * 100);
-    const barW    = Math.max(score, 8);
-    const excerpt = highlightQueryTerms(r.chunk.text.slice(0, 220), query);
-
-    const card = document.createElement("div");
-    card.className = "search-result-card";
-    card.innerHTML = `
-      <div class="src-header">
-        <span class="src-page-badge">📄 Page ${r.chunk.page}</span>
-        <div class="src-score-bar-wrap">
-          <span class="src-score-label">match</span>
-          <div class="src-score-bar" style="width:${barW}px"></div>
-          <span class="src-score-pct">${score}%</span>
-        </div>
-      </div>
-      <div class="src-excerpt">${excerpt}…</div>
-      <div class="src-footer">Click to jump to page ${r.chunk.page}</div>
-    `;
-
-    card.addEventListener("click", () => {
-      // Highlight active card
-      if (activeResultCard) activeResultCard.classList.remove("active-result");
-      card.classList.add("active-result");
-      activeResultCard = card;
-
-      // Jump to page
-      renderPage(r.chunk.page);
-
-      // Flash the status bar with context
-      statusEl.textContent = `🔍 Search result — Page ${r.chunk.page} (${score}% match)`;
-      setTimeout(() => {
-        const t = activeTab();
-        if (t) statusEl.textContent = `✅ Page ${t.currentPage} of ${t.pdfDoc?.numPages}`;
-      }, 3000);
-    });
-
-    container.appendChild(card);
+  let delay = 0;
+  text.split("\n").forEach(line => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+       const sp = document.createElement("div");
+       sp.style.height = "10px";
+       container.appendChild(sp);
+       return;
+    }
+    const el = document.createElement("div");
+    el.style.cssText = `animation: sli .22s ease both; animation-delay: ${delay}ms`;
+    delay += 25;
+    
+    if (trimmed.startsWith("## ") || trimmed.startsWith("# ")) {
+      el.className = "sum-heading";
+      el.textContent = trimmed.replace(/^#+\s*/, "");
+    } else if (/^[•\-\*]\s/.test(trimmed) || /^\d+\.\s/.test(trimmed)) {
+      el.className  = "sum-bullet";
+      const content = trimmed.replace(/^[•\-\*]\s*/, "").replace(/^\d+\.\s*/, "");
+      el.innerHTML  = `<span class="sum-dot">•</span><span class="sum-content">${parseBold(content)}</span>`;
+    } else {
+      el.className  = "sum-plain";
+      el.innerHTML  = parseBold(trimmed);
+    }
+    container.appendChild(el);
   });
 }
 
-// Bold the query terms in excerpt (simple word match)
-function highlightQueryTerms(text, query) {
-  const escaped = text.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-  const words = query.trim().split(/\s+/).filter(w => w.length > 2);
-  if (!words.length) return escaped;
-  const pattern = new RegExp(`(${words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g,'\\')).join("|")})`, "gi");
-  return escaped.replace(pattern, "<mark>$1</mark>");
-}
-
-function showSearchSpinner() {
-  const container = document.getElementById("search-results");
-  container.innerHTML = `<div class="search-spinner"><div class="search-spinner-ring"></div>Searching...</div>`;
-}
-
-function showSearchEmpty(msg) {
-  const container = document.getElementById("search-results");
-  const text = msg || "Type anything to search<br>across the entire PDF.<br><span style=\"color:var(--accent);font-size:10px\">Powered by semantic embeddings</span>";
-  container.innerHTML = `<div class="search-empty"><div class="ei">🔍</div><div>${text}</div></div>`;
-}
-
-function showSearchMeta(msg) {
-  const el = document.getElementById("search-meta");
-  if (el) el.textContent = msg;
-}
+document.getElementById("fs-copy-btn")?.addEventListener("click", () => {
+  const t = document.getElementById("fs-summary-box")?.innerText || "";
+  if (!t) return;
+  navigator.clipboard.writeText(t);
+  const btn = document.getElementById("fs-copy-btn");
+  btn.textContent = "✅ Copied!";
+  setTimeout(() => btn.textContent = "📋 Copy", 2000);
+});
 
 // ── Init ──────────────────────────────────────────────────
 async function init() {
   await loadHighlights();
-
-  // Start RAG engine (loads model in background)
-  RAG.init(
-    (msg)        => updateRagStatus(msg),
-    ()           => updateRagBadge(true),
-    (pct)        => updateRagProgress(pct)
-  );
 
   const params  = new URLSearchParams(window.location.search);
   let fileUrl = params.get("file");
@@ -1964,37 +1885,8 @@ async function init() {
     }
     createTab(fileUrl);
   } else {
-    statusEl.textContent = "Open a PDF or use the 📂 File button to upload.";
+    statusEl.textContent = "Open a document or use the 📂 File button to upload.";
   }
 }
-
-function updateRagProgress(pct) {
-  const bar = document.getElementById("rag-progress-bar");
-  if (bar) {
-    bar.style.width   = pct + "%";
-    bar.style.display = pct < 100 ? "block" : "none";
-  }
-}
-
-// ── RAG mode toggle ────────────────────────────────────────
-document.getElementById("rag-toggle")?.addEventListener("click", () => {
-  ragMode = !ragMode;
-  const btn   = document.getElementById("rag-toggle");
-  const label = document.getElementById("rag-mode-label");
-  if (ragMode) {
-    btn.classList.add("active");
-    if (label) label.textContent = "🌐 Full PDF";
-    appendBubble("thinking", "🧠 RAG mode ON — questions search the entire document");
-  } else {
-    btn.classList.remove("active");
-    if (label) label.textContent = "📄 This Page";
-    appendBubble("thinking", "📄 Page mode — questions use only the current page");
-  }
-  setTimeout(() => {
-    const msgs = document.getElementById("chat-messages");
-    const last = msgs?.querySelector(".bubble.thinking:last-child");
-    if (last) last.remove();
-  }, 2500);
-});
 
 init();

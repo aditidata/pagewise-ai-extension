@@ -15,7 +15,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["rag-worker.js", "pdfjs/*", "viewer.html", "viewer.js", "rag.js", "styles.css"],
+      "resources": ["pdfjs/*", "lib/*", "viewer.html", "viewer.js", "styles.css"],
       "matches": ["<all_urls>"]
     }
   ],

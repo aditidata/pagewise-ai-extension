@@ -22,7 +22,7 @@
   <div class="tabs-wrap" id="tabs-wrap"></div>
   <button class="add-tab" id="add-tab-btn" title="Open another PDF">+</button>
   <button class="upload-file-btn" id="upload-file-btn" title="Open DOCX, PPTX, TXT, MD file">📂 File</button>
-  <input type="file" id="file-input" accept=".pdf,.docx,.pptx,.txt,.md" style="display:none"/>
+  <input type="file" id="file-input" accept=".pdf,.docx,.ppt,.pptx,.txt,.md" multiple style="display:none"/>
   <div class="divider"></div>
   <div class="topbar-right">
     <button class="icon-btn" id="theme-btn" title="Toggle theme">🌙</button>
@@ -46,8 +46,7 @@
   <!-- HIGHLIGHT MODE BUTTON -->
   <button class="action-btn" id="hl-mode-btn" title="Enter highlight mode">🖊 Highlight</button>
   <div class="divider"></div>
-  <!-- SEMANTIC SEARCH BUTTON -->
-  <button class="action-btn" id="search-open-btn" title="Semantic search across PDF">🔍 Search</button>
+  <!-- SEMANTIC SEARCH BUTTON REMOVED -->
 </div>
 
 <!-- HIGHLIGHT ACTION BAR — shown only in highlight mode -->
@@ -76,7 +75,7 @@
     <div class="panel-tabs">
       <button class="panel-tab active" data-panel="summary">Summary</button>
       <button class="panel-tab" data-panel="chat">Chat</button>
-      <button class="panel-tab" data-panel="search">Search</button>
+      <button class="panel-tab" data-panel="full-summary">Full Doc</button>
       <button class="panel-tab" data-panel="flashcards"><span id="fc-tab-count"></span>Cards</button>
       <button class="panel-tab" data-panel="highlights"><span id="hl-tab-count"></span>Saved</button>
     </div>
@@ -190,21 +189,33 @@
       </div>
     </div>
 
-    <!-- SEARCH -->
-    <div class="panel-section" id="panel-search">
-      <div class="search-panel-header">
-        <div class="search-input-wrap">
-          <span class="search-icon">🔍</span>
-          <input type="text" id="search-input" placeholder="Search entire PDF semantically..." autocomplete="off"/>
-          <button class="search-clear-btn" id="search-clear-btn" style="display:none">✕</button>
-        </div>
-        <div class="search-meta" id="search-meta"></div>
+    <!-- FULL SUMMARY -->
+    <div class="panel-section" id="panel-full-summary">
+      <div class="fs-panel-header">
+        <span style="font-size:12px;font-weight:600;color:var(--accent2)">Full Document Summary</span>
       </div>
-      <div class="search-results" id="search-results">
-        <div class="search-empty" id="search-empty">
-          <div class="ei">🔍</div>
-          <div>Type anything to search<br>across the entire PDF.<br><span style="color:var(--accent);font-size:10px">Powered by semantic embeddings</span></div>
-        </div>
+      
+      <div class="fs-action-area" style="padding: 12px; border-bottom: 1px solid var(--border);">
+        <button class="action-btn" id="generate-full-summ-btn" style="width: 100%; justify-content: center; background: var(--accent-blob); color: white;">⚡ Generate Full Summary</button>
+      </div>
+
+      <div class="loader-wrap" id="fs-loader" style="display:none; margin-top: 20px;">
+        <div class="loader-ring"></div>
+        <div class="loader-dots"><span></span><span></span><span></span></div>
+        <div class="loader-text">Analyzing entire document...</div>
+      </div>
+
+      <div class="fs-scroll" id="fs-scroll" style="flex:1; overflow-y:auto; padding: 12px; display:none;">
+        <div class="summary-text" id="fs-summary-box"></div>
+      </div>
+
+      <div class="fs-empty" id="fs-empty" style="flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; color:var(--text-dim); font-size:12px; text-align:center; padding:24px; line-height:1.7;">
+        <div class="ei">📄</div>
+        <div>Click generate to get a<br>comprehensive summary of<br>the entire document at once.</div>
+      </div>
+      
+      <div class="panel-footer fs-footer" id="fs-footer" style="display:none;">
+        <button class="action-btn" id="fs-copy-btn" style="flex:1">📋 Copy</button>
       </div>
     </div>
 
@@ -258,9 +269,9 @@
 </div>
 
 <script src="pdfjs/pdf.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
-<script src="rag.js"></script>
+<script src="lib/jszip.min.js"></script>
+<script src="lib/mammoth.min.js"></script>
+
 <script src="viewer.js"></script>
 </body>
 </html>

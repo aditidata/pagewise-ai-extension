@@ -1000,6 +1000,7 @@ async function renderAllPages(tab) {
     const dgc = document.createElement("canvas");
     hlc.className = "hl-overlay";
     hlc.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";
+    dgc.className = "drag-overlay";
     dgc.style.cssText = "position:absolute;top:0;left:0;pointer-events:none";
 
     wrap.appendChild(cv);
@@ -1135,7 +1136,13 @@ function setupDragOnAllPages(tab) {
       const r   = dgc.getBoundingClientRect();
       const cur = { x: e.clientX - r.left, y: e.clientY - r.top };
       dctx.clearRect(0, 0, dgc.width, dgc.height);
-      dctx.fillStyle = colorMap[selectedColor] + "55";
+      const previewColors = {
+        yellow: "rgba(247,201,72,0.45)",
+        green:  "rgba(74,222,128,0.45)",
+        blue:   "rgba(79,195,247,0.45)",
+        pink:   "rgba(248,113,113,0.45)"
+      };
+      dctx.fillStyle = previewColors[selectedColor] || previewColors.yellow;
       dctx.fillRect(start.x, start.y, cur.x - start.x, cur.y - start.y);
     });
     dgc.addEventListener("mouseup", e => {

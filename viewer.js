@@ -578,8 +578,12 @@ async function openFileAsTab(file) {
 }
 
 async function switchDocTab(id, file, ext) {
-  // activeTabId and caching are now handled by switchTab before this gets called.
-  const pdfPane = document.getElementById("pdf-pane") || document.getElementById("pdf-pane");
+  if (!file) {
+    const pdfPane = document.getElementById("pdf-pane");
+    pdfPane.innerHTML = `<div class="doc-error">❌ File reference lost. Please re-open the file.</div>`;
+    return;
+  }
+  const pdfPane = document.getElementById("pdf-pane");
   if (activeTabId === id) {
     pdfPane.innerHTML = `<div class="doc-loading"><div class="loader-ring"></div><div class="doc-loading-text">Extracting from ${file.name}...</div></div>`;
   }
@@ -603,7 +607,7 @@ async function switchDocTab(id, file, ext) {
 
     } else if (ext === "docx") {
       if (typeof mammoth === "undefined") {
-        throw new Error("Mammoth library not found. Please run:\nInvoke-WebRequest -Uri 'https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js' -OutFile 'lib\\mammoth.min.js'");
+        throw new Error("Mammoth library failed to load. Please reload the extension.");
       }
       const arrayBuf = await file.arrayBuffer();
       const result   = await mammoth.extractRawText({ arrayBuffer: arrayBuf });
@@ -622,6 +626,9 @@ async function switchDocTab(id, file, ext) {
       if (chunk.length) pages.push({ pageNum: pages.length + 1, text: chunk.join("\n\n") });
 
     } else if (ext === "pptx") {
+      if (activeTabId === id) {
+        pdfPane.innerHTML = `<div class="doc-loading"><div class="loader-ring"></div><div class="doc-loading-text">Rendering slides...</div></div>`;
+      }
       pages = await extractPptxPages(file);
     }
 
@@ -685,52 +692,53 @@ function renderDocPage(tabId, pageNum) {
 
   const label = document.createElement("div");
   label.className   = "page-scroll-label";
-  label.textContent = `Section ${pageNum} of ${tab.totalPages}`;
+  label.textContent = page.isPptSlide
+    ? `Slide ${pageNum} of ${tab.totalPages}`
+    : `Section ${pageNum} of ${tab.totalPages}`;
 
+  block.appendChild(label);
+
+  // Plain text content for all doc types (txt, md, docx, pptx)
   const content = document.createElement("div");
   content.className   = "doc-page-content";
   content.textContent = page.text;
-
-  block.appendChild(label);
   block.appendChild(content);
-  pdfPane.appendChild(block);
 
+  pdfPane.appendChild(block);
   loadSummaryForPage(tab, pageNum);
 }
 
 // Extract PPTX slides as pages using JSZip
 async function extractPptxPages(file) {
   if (typeof JSZip === "undefined") {
-    throw new Error("JSZip library not found. Please run:\nInvoke-WebRequest -Uri 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js' -OutFile 'lib\\jszip.min.js'");
+    throw new Error("JSZip library failed to load. Please reload the extension.");
   }
-  const zip    = await JSZip.loadAsync(await file.arrayBuffer());
+
+  const zip = await JSZip.loadAsync(await file.arrayBuffer());
   const slides = [];
 
-  // Find all slide XML files
+  // Find slide files sorted by number
   const slideFiles = Object.keys(zip.files)
     .filter(n => n.match(/^ppt\/slides\/slide\d+\.xml$/))
-    .sort((a, b) => {
-      const na = parseInt(a.match(/\d+/)?.[0] || 0);
-      const nb = parseInt(b.match(/\d+/)?.[0] || 0);
-      return na - nb;
-    });
+    .sort((a, b) => parseInt(a.match(/\d+/)?.[0]||0) - parseInt(b.match(/\d+/)?.[0]||0));
 
   for (const sf of slideFiles) {
     const xml  = await zip.files[sf].async("string");
     const text = extractTextFromXml(xml);
-    if (text.trim()) slides.push({ pageNum: slides.length + 1, text: text.trim() });
+    slides.push({
+      pageNum:    slides.length + 1,
+      text:       text.trim() || `Slide ${slides.length + 1}`,
+      isPptSlide: true
+    });
   }
+
   return slides;
 }
 
 // Strip XML tags and extract text content
 function extractTextFromXml(xml) {
-  // Get all <a:t> text elements (DrawingML text)
   const matches = xml.match(/<a:t[^>]*>([^<]+)<\/a:t>/g) || [];
-  return matches
-    .map(m => m.replace(/<[^>]+>/g, "").trim())
-    .filter(Boolean)
-    .join(" ");
+  return matches.map(m => m.replace(/<[^>]+>/g, "").trim()).filter(Boolean).join(" ");
 }
 
 // ══════════════════════════════════════════════════════════
@@ -858,6 +866,7 @@ function activeTab() { return tabs.find(t => t.id === activeTabId); }
 function getPdfKey() {
   const tab = activeTab();
   if (!tab) return null;
+  if (!tab.url) return tab.isDoc && tab.docFile ? decodeURIComponent(tab.docFile.name) : null;
   return decodeURIComponent(tab.url.split("/").pop() || tab.url);
 }
 
